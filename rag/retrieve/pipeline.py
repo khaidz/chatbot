@@ -14,10 +14,14 @@ from rag.schema import Chunk
 
 def retrieve(query: str, dept: str = "", clearance: bool = True) -> list[Chunk]:
     """Trả về list chunk CHA (đủ ngữ cảnh cho LLM), dedup, giữ thứ tự liên quan."""
-    children = hybrid_search(query, dept, clearance)
+    from rag.timing import span
+
+    with span("retrieve_ms"):
+        children = hybrid_search(query, dept, clearance)
     if not children:
         return []
-    top_children = rerank(query, children, config.RERANK_KEEP)
+    with span("rerank_ms"):
+        top_children = rerank(query, children, config.RERANK_KEEP)
 
     store = get_store()
     # điểm của cha = điểm RRF cao nhất trong các con được rerank chọn

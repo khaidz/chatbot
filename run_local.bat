@@ -27,6 +27,9 @@ set RAG_VISION_MODEL=qwen2.5vl:7b
 set RAG_STORE=numpy
 set RAG_DATA_DIR=storage_local
 set RAG_MAX_RETRIES=0
+REM Ollama lan dau nap model vao RAM co the >30s -> noi timeout rieng cho local
+set RAG_TIMEOUT=120
+set RAG_VISION_TIMEOUT=120
 
 echo [ok] Che do LOCAL: bge-m3 (1024d) + Ollama %RAG_LLM_MODEL% - kho: storage_local\
 echo     Kiem tra Ollama dang chay:  ollama list

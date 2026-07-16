@@ -92,6 +92,12 @@ class NumpyStore:
     def has_doc_id(self, doc_id: str) -> bool:
         return any(v["doc_id"] == doc_id for v in self._docs.values())
 
+    def corpus_signature(self) -> str:
+        """Chữ ký kho — đổi khi thêm/xoá tài liệu. Dùng vô hiệu answer cache."""
+        import hashlib
+
+        return hashlib.md5("|".join(sorted(self._docs.keys())).encode()).hexdigest()
+
     def delete_doc(self, doc_id: str) -> bool:
         """Xoá tài liệu + toàn bộ chunk/vector của nó, ghi lại file kho."""
         shas = [sha for sha, v in self._docs.items() if v["doc_id"] == doc_id]

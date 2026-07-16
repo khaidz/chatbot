@@ -47,6 +47,28 @@ chứng minh cần. Đừng làm cả bộ "cho đủ".
 - [ ] Bật từng mảnh tầng 3 (multihop / reflect / NLI — code sẵn, đang tắt) — chỉ bật mảnh đúng triệu chứng eval chỉ ra
 - [ ] Xin IT whitelist `huggingface.co` → mở khoá bge-m3 + cross-encoder thật, thoát phụ thuộc quota Gemini (việc gửi email, không phải code)
 
+## Tham khảo từ course production-agentic-rag (jamwithai) — đã sàng lọc 16/07/2026
+
+- [x] ~~Answer cache~~ (xong 17/07/2026): `rag/cache.py` — key = câu hỏi chuẩn hoá + dept +
+      clearance (RBAC trong key); vô hiệu tự động khi kho đổi (corpus_sig = md5 sha docs);
+      chỉ cache mode llm/no-context (extractive không cache); tắt: `set RAG_CACHE=off`.
+- [x] ~~Query log + latency~~ (xong 17/07/2026): `rag/timing.py` + 4 cột retrieve/rerank/llm/total_ms;
+      `cli.py log` in latency TB từng khâu (loại lượt cache khỏi trung bình).
+- [x] ~~Streaming đáp án~~ (xong 17/07/2026): `chat_turn_stream()` generator + endpoint SSE
+      `POST /api/sessions/{sid}/messages/stream` + UI hiện chữ dần; lỗi stream → fallback
+      non-stream (có retry) → extractive. Hỗ trợ cả 3 provider (gemini/ollama/openai).
+- [ ] **Adaptive retrieval** (chờ eval): score thấp → LLM viết lại câu hỏi thử lại 1 lần
+      → vẫn thấp mới trả "không tìm thấy". Bản nâng cấp của mục 2 — chỉ làm khi
+      query log cho thấy nhiều câu hợp lệ bị điểm thấp.
+- [ ] **Xem lại hiệu quả cache sau vài tuần dùng thật** (quyết định 17/07/2026: giữ, tính tiếp
+      theo số liệu): chạy `python cli.py log` → tỷ lệ hit = M/(M+N) từ dòng
+      "Latency TB (N lượt tươi, M lượt cache)". >15-20% = đang gánh quota đáng kể;
+      <5% = chỉ là bảo hiểm demo (vẫn giữ, miễn phí). Nhiều câu "cùng ý khác chữ" bị miss
+      → cân nhắc semantic cache (có rủi ro trả nhầm — cần cẩn trọng).
+- Không lấy: Airflow (chỉ khi sync Drive/SharePoint), OpenSearch (PG đủ), LangGraph (tầng 4).
+- Course xác nhận lộ trình hiện tại: guardrails out-of-domain = ngưỡng tự tin (mục 2),
+  document grading = rerank llm đã có, foundation-first = triết lý cẩm nang.
+
 ## Việc sản phẩm (không phải chất lượng RAG)
 
 - [ ] Multi-user cho server: connection pool + bỏ lock toàn cục (hiện serialize mọi request — đủ cho nội bộ/single-user)

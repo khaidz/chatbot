@@ -13,13 +13,21 @@ _RETRYABLE = {429, 500, 503}
 _RETRY_DELAY_RE = re.compile(r'"retryDelay"\s*:\s*"(\d+(?:\.\d+)?)s"')
 
 
-def post_json(url: str, body: dict, timeout: int = 120, tag: str = "Gemini"):
-    """Trả về requests.Response chắc chắn status 200, hoặc raise RuntimeError."""
+def post_json(url: str, body: dict, timeout: int | None = None, tag: str = "Gemini"):
+    """Trả về requests.Response chắc chắn status 200, hoặc raise RuntimeError.
+    timeout=None -> dùng RAG_TIMEOUT (mặc định 30s); quá hạn -> lỗi rõ, không treo user."""
     import requests
 
+    timeout = timeout or config.TIMEOUT
     last = None
     for attempt in range(config.MAX_RETRIES + 1):
-        r = requests.post(url, json=body, timeout=timeout)
+        try:
+            r = requests.post(url, json=body, timeout=timeout)
+        except requests.exceptions.Timeout:
+            raise RuntimeError(
+                f"{tag}: quá thời gian chờ ({timeout}s) — mạng hoặc dịch vụ không "
+                "phản hồi (chỉnh bằng RAG_TIMEOUT)"
+            )
         if r.status_code == 200:
             return r
         last = r

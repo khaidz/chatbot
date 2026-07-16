@@ -68,7 +68,8 @@ def _print_result(result: dict):
                 f"  [{s['n']}] {s['source']} — trang {s['page']} — "
                 f"liên quan {s['rel']:.0%} (rrf {s['score']:.4f}) ({s['chunk_id']})"
             )
-    print(f"\ngrounded={result['grounded']}  mode={result['mode']}")
+    tag = " (cache)" if result.get("cached") else ""
+    print(f"\ngrounded={result['grounded']}  mode={result['mode']}{tag}")
 
 
 def cmd_chat(args):
@@ -132,8 +133,9 @@ def cmd_log(args):
     for r in rows[-args.tail:]:
         g = "✓" if r["grounded"] else "✗"
         sid = f" ({r['session_id']})" if r.get("session_id") else ""
+        t = r.get("total_ms", 0)
         print(f"{r['ts'][:16]}  score={r['top_score']:.4f}  nguồn={r['n_sources']}  "
-              f"{g} [{r['mode']}]{sid}  {r['question'][:55]}")
+              f"t={t}ms  {g} [{r['mode']}]{sid}  {r['question'][:48]}")
         if r.get("standalone"):
             print(f"{'':18}↳ đã hiểu là: {r['standalone'][:65]}")
 
@@ -158,6 +160,17 @@ def cmd_log(args):
         else:
             print(f"=> Hai nhóm CHỒNG LẤN (max not-found {lo:.4f} >= min answered {hi:.4f}) "
                   "— chưa đặt ngưỡng được, cần thêm dữ liệu/cải thiện retrieval")
+
+    # latency trung bình từng khâu (bỏ lượt cache — gần 0ms, làm lệch số)
+    fresh = [r for r in rows if "+cache" not in r.get("mode", "")]
+    cached = len(rows) - len(fresh)
+    if fresh:
+        def avg(col):
+            vals = [r.get(col, 0) or 0 for r in fresh]
+            return sum(vals) / len(vals)
+        print(f"Latency TB ({len(fresh)} lượt tươi, {cached} lượt cache): "
+              f"retrieve={avg('retrieve_ms'):.0f}ms  rerank={avg('rerank_ms'):.0f}ms  "
+              f"llm={avg('llm_ms'):.0f}ms  tổng={avg('total_ms'):.0f}ms")
 
 
 def cmd_eval(args):

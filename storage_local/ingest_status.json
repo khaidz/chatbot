@@ -1,0 +1,14 @@
+{
+ "game": {
+  "filename": "game.pdf",
+  "status": "ingested",
+  "message": "13 trang (hybrid, text), 22 cha / 63 con, 17498 ký tự",
+  "ts": "2026-07-17T01:16:22"
+ },
+ "pl_5": {
+  "filename": "pl_5.docx",
+  "status": "ingested",
+  "message": "1 trang (text), 2 cha / 7 con, 1966 ký tự",
+  "ts": "2026-07-17T01:17:18"
+ }
+}

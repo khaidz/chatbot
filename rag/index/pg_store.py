@@ -114,6 +114,14 @@ class PgVectorStore:
             cur.execute("SELECT 1 FROM docs WHERE doc_id=%s LIMIT 1", (doc_id,))
             return cur.fetchone() is not None
 
+    def corpus_signature(self) -> str:
+        """Chữ ký kho — đổi khi thêm/xoá tài liệu. Dùng vô hiệu answer cache."""
+        import hashlib
+
+        with self.conn.cursor() as cur:
+            cur.execute("SELECT coalesce(string_agg(sha, '|' ORDER BY sha), '') FROM docs")
+            return hashlib.md5(cur.fetchone()[0].encode()).hexdigest()
+
     def delete_doc(self, doc_id: str) -> bool:
         with self.conn.cursor() as cur:
             cur.execute("DELETE FROM chunks WHERE doc_id=%s", (doc_id,))

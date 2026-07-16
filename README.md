@@ -285,6 +285,9 @@ Gemini đọc cả trang → Markdown (giữ bảng, dấu tiếng Việt, bỏ 
 | `RAG_VISION_PROVIDER` | `ollama` \| `openai` \| `gemini` \| `offline` | `offline` |
 | `RAG_VISION_MODEL` | tên model | `qwen2-vl` |
 | `RAG_MAX_RETRIES` | `0` = không retry (dev) \| `1-2` (prod, chỉ retry 429/500/503) | `0` |
+| `RAG_CACHE` | `on` \| `off` — answer cache exact-match (tự vô hiệu khi kho đổi) | `on` |
+| `RAG_TIMEOUT` | giây chờ tối đa mỗi cú gọi LLM/embedding — quá hạn báo "quá thời gian chờ" rõ ràng, không treo (streaming: áp cho khoảng lặng giữa 2 chunk, token đang chảy không bị cắt). Local Ollama nạp model lâu → `run_local.bat` đặt 120 | `30` |
+| `RAG_VISION_TIMEOUT` | giây chờ Vision OCR 1 trang (vốn lâu hơn chat) | `120` |
 | `PYTHONUTF8` | `1` — tránh UnicodeEncodeError console Windows | *(nên set)* |
 
 > `set` chỉ sống trong cửa sổ cmd hiện tại. `setx` lưu lâu dài (áp dụng cmd mở MỚI).
@@ -302,11 +305,22 @@ python cli.py stats
 ```
 
 **Query log:** mọi lượt hỏi (`ask`/`chat`/web) được ghi lại — kể cả khi "Không tìm thấy"
-(giữ `top_score` của nguồn tốt nhất retrieval tìm được). Backend theo `RAG_STORE`:
-bảng `query_log` (pgvector) hoặc `<RAG_DATA_DIR>\query_log.jsonl` (numpy).
-`python cli.py log` in các lượt gần nhất + phân bố score hai nhóm trả-lời-được /
-không-tìm-thấy — khi hai nhóm tách nhau, nó tự gợi ý vùng đặt ngưỡng tự tin (Todo.md mục 2).
-Ghi log lỗi không bao giờ làm hỏng câu trả lời (chỉ in cảnh báo).
+(giữ `top_score` của nguồn tốt nhất retrieval tìm được) — kèm **latency từng khâu**
+(`retrieve/rerank/llm/total_ms`). Backend theo `RAG_STORE`: bảng `query_log` (pgvector)
+hoặc `<RAG_DATA_DIR>\query_log.jsonl` (numpy). `python cli.py log` in các lượt gần nhất
++ phân bố score hai nhóm (tự gợi ý vùng ngưỡng tự tin, Todo.md mục 2) + latency trung bình
+từng khâu (loại lượt cache). Ghi log lỗi không bao giờ làm hỏng câu trả lời.
+
+**Answer cache** (exact-match, mặc định bật): câu hỏi lặp lại trả ngay từ cache — 0 lượt
+Gemini, ~0ms. Key gồm cả dept/clearance (RBAC không rò qua cache); với chat, key là câu
+**đã condense**. Tự vô hiệu khi kho đổi (ingest/xoá tài liệu → chữ ký kho đổi). Chỉ cache
+trả lời `mode=llm`/`no-context` — extractive (LLM đang lỗi) không cache. Tắt: `set RAG_CACHE=off`.
+CLI hiển thị `mode=llm (cache)` khi trúng.
+
+**Streaming:** web UI nhận đáp án qua SSE (`POST /api/sessions/{sid}/messages/stream`) —
+chữ hiện dần trong lúc LLM sinh, sự kiện `result` cuối cùng mang nguồn/grounded đầy đủ.
+Endpoint không-stream cũ vẫn giữ nguyên cho API. Stream lỗi giữa chừng → tự fallback
+non-stream (có retry) → extractive.
 
 - `--confidential`: tài liệu mật — không gửi ảnh lên cloud khi OCR, chỉ người có clearance thấy.
 - `--dept legal`: tài liệu thuộc phòng ban — chỉ query cùng `--dept` mới thấy (tài liệu không gắn dept = công khai).

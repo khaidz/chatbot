@@ -53,6 +53,15 @@ OPENAI_API_KEY = _env("OPENAI_API_KEY")
 OPENAI_BASE = _env("OPENAI_BASE", "https://api.openai.com/v1")
 OLLAMA_BASE = _env("OLLAMA_BASE", "http://localhost:11434")
 
+# --- Answer cache (exact-match, tự vô hiệu khi kho đổi) ---
+CACHE = _env("RAG_CACHE", "on")  # on | off
+
+# --- Timeout gọi LLM/embedding (giây) ---
+# Quá hạn -> lỗi rõ ràng "Quá thời gian chờ", không treo user.
+# Ollama local lần đầu nạp model vào RAM có thể >30s -> run_local.bat set 120.
+TIMEOUT = int(_env("RAG_TIMEOUT", "30"))
+VISION_TIMEOUT = int(_env("RAG_VISION_TIMEOUT", "120"))  # OCR 1 trang ảnh vốn lâu hơn
+
 # --- Chat đa phiên ---
 CHAT_KEEP_TURNS = 8      # số lượt gần nhất giữ NGUYÊN VĂN trong prompt (cũ hơn -> tóm tắt)
 CHAT_CONDENSE_MSGS = 6   # số message gần nhất dùng để viết lại câu hỏi độc lập

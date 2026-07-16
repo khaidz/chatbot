@@ -73,7 +73,7 @@ class Embedder:
                     for t in batch
                 ]
             }
-            r = post_json(url, body, timeout=120, tag="Gemini embed")
+            r = post_json(url, body, tag="Gemini embed")  # timeout = RAG_TIMEOUT
             vectors.extend(e["values"] for e in r.json()["embeddings"])
         return np.array(vectors, dtype=np.float32)
 

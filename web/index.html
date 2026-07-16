@@ -292,14 +292,56 @@ async function send() {
   autosize();
   addRow("user", esc(q));
   const typing = addRow("bot", `<span class="typing"><span></span><span></span><span></span></span>`);
+  const bubble = typing.querySelector(".bubble");
   try {
-    const r = await api(`/sessions/${currentSid}/messages`, {
-      method: "POST", body: JSON.stringify({ question: q }),
+    // streaming SSE: delta hiện dần từng chữ, result cuối render đầy đủ nguồn/badge
+    const resp = await fetch(`/api/sessions/${currentSid}/messages/stream`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question: q }),
     });
-    typing.querySelector(".bubble").innerHTML = botHtml({ ...r, question: q });
+    if (!resp.ok || !resp.body) {
+      let detail = resp.statusText;
+      try { detail = (await resp.json()).detail || detail; } catch {}
+      throw new Error(detail);
+    }
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "", acc = "", gotResult = false;
+    // watchdog: server im lặng quá 45s (server tự timeout ở 30s + biên) -> coi là lỗi mạng
+    let watchdog;
+    const armWatchdog = () => {
+      clearTimeout(watchdog);
+      watchdog = setTimeout(() => reader.cancel("timeout"), 45000);
+    };
+    armWatchdog();
+    for (;;) {
+      const { done, value } = await reader.read();
+      armWatchdog();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let idx;
+      while ((idx = buf.indexOf("\n\n")) >= 0) {
+        const line = buf.slice(0, idx).trim();
+        buf = buf.slice(idx + 2);
+        if (!line.startsWith("data: ")) continue;
+        const ev = JSON.parse(line.slice(6));
+        if (ev.type === "delta") {
+          acc += ev.text;
+          bubble.innerHTML = fmtAnswer(acc);
+          $("messages").scrollTop = $("messages").scrollHeight;
+        } else if (ev.type === "result") {
+          gotResult = true;
+          bubble.innerHTML = botHtml({ ...ev, question: q });
+        } else if (ev.type === "error") {
+          throw new Error(ev.detail);
+        }
+      }
+    }
+    clearTimeout(watchdog);
+    if (!gotResult && !acc) throw new Error("lỗi mạng hoặc quá thời gian chờ — thử lại");
   } catch (e) {
     typing.className = "row bot error";
-    typing.querySelector(".bubble").textContent = "Lỗi: " + e.message;
+    bubble.textContent = "Lỗi: " + e.message;
   } finally {
     busy = false;
     $("btn-send").disabled = false;

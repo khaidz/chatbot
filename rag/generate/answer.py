@@ -34,34 +34,59 @@ TRẢ LỜI (kèm [n]):"""
 
 def answer(query: str, dept: str = "", clearance: bool = True,
            parents: list[Chunk] | None = None) -> dict:
-    """Trả về {answer, sources, cited, grounded, mode}."""
+    """Trả về {answer, sources, cited, grounded, mode[, cached]}."""
+    import time as _time
+
+    from rag import cache
     from rag.querylog import log_query
+    from rag.timing import record, span
+
+    t0 = _time.perf_counter()
+    # multihop truyền parents riêng -> câu trả lời phụ thuộc context ngoài, bỏ qua cache
+    key = cache.make_key(query, dept, clearance) \
+        if (cache.enabled() and parents is None) else None
+    if key:
+        hit = cache.get(key)
+        if hit is not None:
+            result, top = hit
+            result = dict(result)
+            result["cached"] = True
+            record("total_ms", (_time.perf_counter() - t0) * 1000)
+            log_query(query, query, [],
+                      {**result, "mode": result["mode"] + "+cache"}, top_score=top)
+            return result
 
     if parents is None:
         parents = retrieve(query, dept, clearance)
+    top_score = max((p.score for p in parents), default=0.0)
+
     if not parents:
         result = {"answer": NOT_FOUND, "sources": [], "cited": [], "grounded": True,
                   "mode": "no-context"}
-        log_query(query, query, [], result)
-        return result
+    else:
+        context, sources = build_context(parents)
+        mode = "llm"
+        text = ""
+        if not config.offline_forced() and config.LLM_PROVIDER != "offline":
+            try:
+                with span("llm_ms"):
+                    text = chat(_PROMPT.format(not_found=NOT_FOUND, context=context,
+                                               query=query))
+            except Exception as e:
+                print(f"[llm] lỗi ({str(e)[:150]}) — chuyển sang extractive")
+        if not text:
+            mode = "extractive"
+            text = _extractive(query, parents)
 
-    context, sources = build_context(parents)
-    mode = "llm"
-    text = ""
-    if not config.offline_forced() and config.LLM_PROVIDER != "offline":
-        try:
-            text = chat(_PROMPT.format(not_found=NOT_FOUND, context=context, query=query))
-        except Exception as e:
-            print(f"[llm] lỗi ({str(e)[:150]}) — chuyển sang extractive")
-    if not text:
-        mode = "extractive"
-        text = _extractive(query, parents)
+        cited, grounded = verify_citations(text, len(sources))
+        used = pick_sources(text, cited, sources)
+        result = {"answer": text, "sources": used, "cited": sorted(cited),
+                  "grounded": grounded, "mode": mode}
 
-    cited, grounded = verify_citations(text, len(sources))
-    used = pick_sources(text, cited, sources)
-    result = {"answer": text, "sources": used, "cited": sorted(cited),
-              "grounded": grounded, "mode": mode}
-    log_query(query, query, parents, result)
+    record("total_ms", (_time.perf_counter() - t0) * 1000)
+    log_query(query, query, parents, result, top_score=top_score)
+    if key and result["mode"] in ("llm", "no-context"):
+        cache.put(key, top_score, result)
     return result
 
 

@@ -25,12 +25,12 @@ from datetime import datetime
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
 import config
 from rag.chat import get_chat_store
-from rag.chat.pipeline import chat_turn
+from rag.chat.pipeline import chat_turn, chat_turn_stream
 from rag.index import get_store
 from rag.ingest.pipeline import _doc_id, ingest_files
 
@@ -147,6 +147,37 @@ def delete_session(sid: str):
             raise HTTPException(404, f"Không tìm thấy session '{sid}'")
         store.delete_session(sid)
     return {"ok": True}
+
+
+@app.post("/api/sessions/{sid}/messages/stream")
+def post_message_stream(sid: str, body: Question):
+    """SSE: data: {"type":"delta","text":...} nhiều lần, kết thúc {"type":"result",...}."""
+    q = body.question.strip()
+    if not q:
+        raise HTTPException(400, "Câu hỏi rỗng")
+
+    def _sse(obj: dict) -> str:
+        return "data: " + json.dumps(obj, ensure_ascii=False) + "\n\n"
+
+    def gen():
+        _lock.acquire()  # generator sống qua nhiều chunk -> giữ lock đến khi xong
+        try:
+            store = get_chat_store()
+            if store.get_session(sid) is None:
+                yield _sse({"type": "error", "detail": f"Không tìm thấy session '{sid}'"})
+                return
+            try:
+                for kind, payload in chat_turn_stream(store, sid, q):
+                    if kind == "delta":
+                        yield _sse({"type": "delta", "text": payload})
+                    else:
+                        yield _sse({"type": "result", **payload})
+            except Exception as e:
+                yield _sse({"type": "error", "detail": str(e)[:300]})
+        finally:
+            _lock.release()
+
+    return StreamingResponse(gen(), media_type="text/event-stream")
 
 
 # ---------------- documents ----------------
