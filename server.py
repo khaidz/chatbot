@@ -19,6 +19,7 @@ một lock. Đủ cho nội bộ/single-user; nhiều user đồng thời thì c
 connection pool + worker riêng (chưa cần bây giờ).
 """
 import json
+import os
 import sys
 import threading
 from datetime import datetime
@@ -43,17 +44,34 @@ WEB_DIR = Path(__file__).parent / "web"
 UPLOAD_DIR = Path(__file__).parent / "uploads"
 ALLOWED_EXT = {".pdf", ".docx", ".txt", ".md", ".markdown"}
 _lock = threading.Lock()
-_status_lock = threading.Lock()
+_status_lock = threading.RLock()  # RLock: _set_status giữ lock rồi gọi _load_status
 
 
 # ---------- trạng thái ingest (persist ra file, sống qua restart) ----------
+# Đọc/ghi đều qua _status_lock + ghi ATOMIC (file tạm -> os.replace) — thread ingest
+# nền ghi trong lúc UI poll GET /api/documents sẽ không bao giờ đọc trúng file dở.
 def _status_path() -> Path:
     return Path(config.DATA_DIR) / "ingest_status.json"
 
 
 def _load_status() -> dict:
+    with _status_lock:
+        p = _status_path()
+        if not p.exists():
+            return {}
+        try:
+            return json.loads(p.read_text(encoding="utf-8-sig") or "{}")
+        except json.JSONDecodeError:
+            print("[status] ingest_status.json hỏng (ghi dở từ lần crash trước?) — coi như rỗng")
+            return {}
+
+
+def _write_status(data: dict):
     p = _status_path()
-    return json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_name(p.name + ".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+    os.replace(tmp, p)  # atomic trên cùng ổ đĩa
 
 
 def _set_status(doc_id: str, filename: str, status: str, message: str):
@@ -63,9 +81,7 @@ def _set_status(doc_id: str, filename: str, status: str, message: str):
             "filename": filename, "status": status, "message": message,
             "ts": datetime.now().isoformat(timespec="seconds"),
         }
-        p = _status_path()
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+        _write_status(data)
 
 
 def _drop_status(doc_id: str):
@@ -73,9 +89,7 @@ def _drop_status(doc_id: str):
         data = _load_status()
         if doc_id in data:
             del data[doc_id]
-            _status_path().write_text(
-                json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8"
-            )
+            _write_status(data)
 
 
 def _ingest_background(path: Path, dept: str, confidential: bool, doc_id: str):

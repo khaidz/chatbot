@@ -98,5 +98,12 @@ def read_log() -> list[dict]:
     p = Path(config.DATA_DIR) / "query_log.jsonl"
     if not p.exists():
         return []
-    return [json.loads(line) for line in p.read_text(encoding="utf-8").splitlines()
-            if line.strip()]
+    rows = []
+    for line in p.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            rows.append(json.loads(line))
+        except json.JSONDecodeError:
+            pass  # dòng ghi dở (process bị kill giữa chừng) — bỏ qua, không chết cả log
+    return rows

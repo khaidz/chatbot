@@ -10,12 +10,14 @@
 """
 import hashlib
 import json
+import re
 from pathlib import Path
 
 import config
 from rag.text.vi import normalize
 
 _pg_conn = None
+_PUNCT_RE = re.compile(r"[^\w\s]", re.UNICODE)  # bỏ dấu câu: "Xin chào." == "xin chào"
 
 
 def enabled() -> bool:
@@ -23,7 +25,8 @@ def enabled() -> bool:
 
 
 def make_key(question: str, dept: str, clearance: bool) -> str:
-    base = f"{' '.join(normalize(question).lower().split())}|{dept}|{int(clearance)}"
+    text = _PUNCT_RE.sub(" ", normalize(question).lower())
+    base = f"{' '.join(text.split())}|{dept}|{int(clearance)}"
     return hashlib.md5(base.encode("utf-8")).hexdigest()
 
 

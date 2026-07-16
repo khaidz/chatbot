@@ -1,33 +1,42 @@
 @echo off
-REM ⭐ Cấu hình ĐANG CHẠY ĐƯỢC: Gemini toàn tuyến (mạng công ty thông Google, chặn HF).
-REM Key đặt riêng 1 lần bằng:  setx GEMINI_API_KEY "AIza..."  (rồi mở cmd MỚI)
-REM `set` chỉ sống trong cửa sổ cmd hiện tại -> chạy lại file này mỗi phiên.
+REM ============================================================================
+REM  CHE DO CLOUD GEMINI  (kho: PostgreSQL/pgvector, du lieu KHONG mat)
+REM  Nguyen tac: bat nay set DU MOI BIEN -> chay bat nao ra dung moi truong do,
+REM  khong thua ke rac tu bat chay truoc trong cung cua so cmd (su co #10).
+REM  Key nen de ngoai file:  setx GEMINI_API_KEY "..."  roi mo cmd MOI.
+REM ============================================================================
 
 set RAG_OFFLINE=
-set GEMINI_API_KEY=
 set PYTHONUTF8=1
-set RAG_EMBED_PROVIDER=gemini
-REM embedding-001 het quota (429) -> dung gemini-embedding-2 (bucket quota rieng, in 8192 token)
-set RAG_EMBED_MODEL=gemini-embedding-2-preview
-set RAG_EMBED_DIM=1536
-set RAG_LLM_PROVIDER=gemini
-REM su co #6: ten ban cung (gemini-2.5-flash-lite) bi khoa voi user moi (404) -> dung ALIAS *-latest
-set RAG_LLM_MODEL=gemini-3-flash-preview
-set RAG_RERANKER=llm
-set RAG_VISION_PROVIDER=gemini
-set RAG_VISION_MODEL=gemini-flash-lite-latest
 
+REM --- Key (dang hardcode theo lua chon cua ban — KHONG commit file nay len git) ---
+set GEMINI_API_KEY=
+REM --- Kho: PostgreSQL + pgvector ---
 set RAG_STORE=pgvector
+set RAG_PG_DSN=postgresql://postgres:123456@localhost:5432/rag
+set RAG_DATA_DIR=storage
 
-REM Retry loi tam (429/500/503): mac dinh 0 = KHONG retry (dev). Prod: doi thanh 2.
+REM --- Embedding (LUU Y: doi model = phai xoa kho + ingest lai, vector 2 model
+REM     khong so sanh duoc; he thong se tu chan neu lech) ---
+set RAG_EMBED_PROVIDER=gemini
+set RAG_EMBED_MODEL=gemini-embedding-001
+set RAG_EMBED_DIM=1536
+
+REM --- LLM + Vision (doi thoai mai, khong can re-ingest; 404 -> dung alias *-latest) ---
+set RAG_LLM_PROVIDER=gemini
+set RAG_LLM_MODEL=gemini-3.1-flash-lite
+set RAG_VISION_PROVIDER=gemini
+set RAG_VISION_MODEL=gemini-3.1-flash-lite
+set RAG_RERANKER=llm
+
+REM --- Van hanh ---
 set RAG_MAX_RETRIES=0
+set RAG_CACHE=on
 set RAG_TIMEOUT=30
 set RAG_VISION_TIMEOUT=120
 
 if "%GEMINI_API_KEY%"=="" (
-  echo [!] GEMINI_API_KEY chua duoc dat. Chay:  setx GEMINI_API_KEY "AIza..."  roi MO CMD MOI.
+  echo [!] GEMINI_API_KEY chua duoc dat. Chay:  setx GEMINI_API_KEY "..."  roi MO CMD MOI.
 ) else (
-  echo [ok] Da nap cau hinh Gemini. Vi du:
-  echo    python cli.py ingest examples\nd13.md examples\hopdong.md
-  echo    python cli.py ask "ND 13 dinh nghia du lieu ca nhan the nao"
+  echo [ok] GEMINI: embed=%RAG_EMBED_MODEL% llm=%RAG_LLM_MODEL% kho=pgvector timeout=%RAG_TIMEOUT%s
 )

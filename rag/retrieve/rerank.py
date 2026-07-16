@@ -58,7 +58,7 @@ def _llm(query: str, chunks: list[Chunk], keep: int) -> list[Chunk]:
         "Trả về DUY NHẤT một mảng JSON các chỉ số, ví dụ: [2, 0, 5]. Không giải thích.\n\n"
         f"{listing}"
     )
-    reply = chat(prompt)
+    reply = chat(prompt, temperature=0.0)  # xếp hạng cần ổn định, không cần sáng tạo
     m = _JSON_ARR_RE.search(reply)
     if not m:
         raise ValueError(f"LLM không trả JSON array: {reply[:120]!r}")

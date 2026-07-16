@@ -77,7 +77,9 @@ def condense(history: list[dict], question: str) -> str:
         question=question,
     )
     try:
-        out = chat(prompt).strip().strip('"').splitlines()[0].strip()
+        # temperature=0: cùng hội thoại + cùng câu hỏi phải ra CÙNG câu viết lại
+        # (câu này là KEY của answer cache — bay bổng là cache trượt liên tục)
+        out = chat(prompt, temperature=0.0).strip().strip('"').splitlines()[0].strip()
         if 0 < len(out) <= 300:
             return out
     except Exception as e:

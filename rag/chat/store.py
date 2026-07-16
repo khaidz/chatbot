@@ -31,7 +31,13 @@ class JsonChatStore:
 
     def _read(self, sid: str) -> dict | None:
         p = self._path(sid)
-        return json.loads(p.read_text(encoding="utf-8")) if p.exists() else None
+        if not p.exists():
+            return None
+        try:
+            return json.loads(p.read_text(encoding="utf-8-sig"))
+        except json.JSONDecodeError:
+            print(f"[chat] file phiên {sid} hỏng — coi như không tồn tại")
+            return None
 
     def _write(self, sid: str, data: dict):
         self._path(sid).write_text(

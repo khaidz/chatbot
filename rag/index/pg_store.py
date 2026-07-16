@@ -21,7 +21,8 @@ class PgVectorStore:
             ) from e
         from rag.embed import get_embedder
 
-        self.dim = get_embedder().dim
+        self._emb = get_embedder()
+        self.dim = self._emb.dim
         self.conn = psycopg2.connect(dsn)
         self.conn.autocommit = True
         self._init_schema()
@@ -65,6 +66,37 @@ class PgVectorStore:
                     f"Bảng chunks có vector({row[0]}) nhưng embedder dim={self.dim}. "
                     "Đổi embedding = tạo DB/bảng mới."
                 )
+
+            # khoá cả PROVIDER/MODEL (2 model cùng chiều vẫn KHÔNG so sánh được với
+            # nhau — chỉ check dim là trộn vector âm thầm). Giống meta.json bên numpy.
+            cur.execute("CREATE TABLE IF NOT EXISTS kho_meta(k text PRIMARY KEY, v text)")
+            cur.execute("SELECT k, v FROM kho_meta")
+            meta = dict(cur.fetchall())
+            if meta:
+                if (meta.get("embed_provider") != self._emb.provider
+                        or meta.get("embed_model") != self._emb.model):
+                    raise RuntimeError(
+                        f"Kho pgvector được embed bằng {meta.get('embed_provider')}/"
+                        f"{meta.get('embed_model')} nhưng đang chạy "
+                        f"{self._emb.provider}/{self._emb.model}. Một kho chỉ dùng MỘT "
+                        "embedding — hoặc đổi RAG_EMBED_MODEL về như cũ, hoặc làm lại kho: "
+                        "DROP TABLE chunks, docs, kho_meta; rồi ingest lại."
+                    )
+            else:
+                cur.execute("SELECT count(*) FROM chunks WHERE NOT is_parent")
+                n_children = cur.fetchone()[0]
+                cur.execute(
+                    """INSERT INTO kho_meta(k, v) VALUES
+                       ('embed_provider', %s), ('embed_model', %s), ('embed_dim', %s)""",
+                    (self._emb.provider, self._emb.model, str(self.dim)),
+                )
+                if n_children:
+                    print(
+                        f"[kho_meta] Kho cũ chưa ghi model embedding — ghi nhận "
+                        f"{self._emb.provider}/{self._emb.model} là chuẩn. NẾU kho này "
+                        "từng embed bằng model KHÁC, hãy DROP TABLE chunks, docs, kho_meta "
+                        "rồi ingest lại để chắc chắn."
+                    )
 
     # ---------- write ----------
     def has_doc_sha(self, sha: str) -> bool:

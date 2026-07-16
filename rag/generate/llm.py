@@ -9,17 +9,19 @@ import config
 
 
 def chat(prompt: str, system: str | None = None, provider: str | None = None,
-         model: str | None = None) -> str:
+         model: str | None = None, temperature: float | None = None) -> str:
+    """temperature=0 cho tác vụ cần DETERMINISTIC (condense làm key cache, rerank JSON);
+    None = mặc định của provider (sinh câu trả lời)."""
     provider = provider or config.LLM_PROVIDER
     model = model or config.LLM_MODEL
     if config.offline_forced() or provider == "offline":
         return ""  # caller (answer.py) tự chuyển sang extractive
     if provider == "gemini":
-        return _gemini_generate(model, [{"text": prompt}], system)
+        return _gemini_generate(model, [{"text": prompt}], system, temperature)
     if provider == "ollama":
-        return _ollama_chat(model, prompt, system)
+        return _ollama_chat(model, prompt, system, temperature=temperature)
     if provider == "openai":
-        return _openai_chat(model, prompt, system)
+        return _openai_chat(model, prompt, system, temperature=temperature)
     raise ValueError(f"LLM provider chưa hỗ trợ: {provider}")
 
 
@@ -151,7 +153,7 @@ def vision_ocr(png_bytes: bytes, prompt: str, provider: str | None = None,
     b64 = base64.b64encode(png_bytes).decode("ascii")
     if provider == "gemini":
         parts = [{"inline_data": {"mime_type": "image/png", "data": b64}}, {"text": prompt}]
-        return _gemini_generate(model, parts, None)
+        return _gemini_generate(model, parts, None, None)
     if provider == "ollama":
         return _ollama_chat(model, prompt, None, images=[b64])
     if provider == "openai":
@@ -160,7 +162,8 @@ def vision_ocr(png_bytes: bytes, prompt: str, provider: str | None = None,
 
 
 # ---------- backends ----------
-def _gemini_generate(model: str, parts: list[dict], system: str | None) -> str:
+def _gemini_generate(model: str, parts: list[dict], system: str | None,
+                     temperature: float | None = None) -> str:
     from rag.net import post_json
 
     if not config.GEMINI_API_KEY:
@@ -169,6 +172,8 @@ def _gemini_generate(model: str, parts: list[dict], system: str | None) -> str:
     body: dict = {"contents": [{"role": "user", "parts": parts}]}
     if system:
         body["systemInstruction"] = {"parts": [{"text": system}]}
+    if temperature is not None:
+        body["generationConfig"] = {"temperature": temperature}
     r = post_json(url, body)  # timeout = RAG_TIMEOUT (mặc định 30s)
     data = r.json()
     try:
@@ -179,7 +184,8 @@ def _gemini_generate(model: str, parts: list[dict], system: str | None) -> str:
         raise RuntimeError(f"Gemini trả về bất thường: {str(data)[:300]}")
 
 
-def _ollama_chat(model: str, prompt: str, system: str | None, images=None) -> str:
+def _ollama_chat(model: str, prompt: str, system: str | None, images=None,
+                 temperature: float | None = None) -> str:
     import requests
 
     messages = []
@@ -189,11 +195,14 @@ def _ollama_chat(model: str, prompt: str, system: str | None, images=None) -> st
     if images:
         msg["images"] = images
     messages.append(msg)
+    body: dict = {"model": model, "messages": messages, "stream": False}
+    if temperature is not None:
+        body["options"] = {"temperature": temperature}
     timeout = config.VISION_TIMEOUT if images else config.TIMEOUT
     try:
         r = requests.post(
             f"{config.OLLAMA_BASE}/api/chat",
-            json={"model": model, "messages": messages, "stream": False},
+            json=body,
             timeout=timeout,
         )
     except requests.exceptions.Timeout:
@@ -204,7 +213,8 @@ def _ollama_chat(model: str, prompt: str, system: str | None, images=None) -> st
     return r.json()["message"]["content"].strip()
 
 
-def _openai_chat(model: str, prompt: str, system: str | None, image_b64=None) -> str:
+def _openai_chat(model: str, prompt: str, system: str | None, image_b64=None,
+                 temperature: float | None = None) -> str:
     import requests
 
     messages = []
@@ -218,12 +228,15 @@ def _openai_chat(model: str, prompt: str, system: str | None, image_b64=None) ->
         messages.append({"role": "user", "content": content})
     else:
         messages.append({"role": "user", "content": prompt})
+    body: dict = {"model": model, "messages": messages}
+    if temperature is not None:
+        body["temperature"] = temperature
     timeout = config.VISION_TIMEOUT if image_b64 else config.TIMEOUT
     try:
         r = requests.post(
             f"{config.OPENAI_BASE}/chat/completions",
             headers={"Authorization": f"Bearer {config.OPENAI_API_KEY}"},
-            json={"model": model, "messages": messages},
+            json=body,
             timeout=timeout,
         )
     except requests.exceptions.Timeout:
