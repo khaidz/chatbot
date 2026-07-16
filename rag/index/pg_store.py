@@ -109,6 +109,31 @@ class PgVectorStore:
                 cur.execute("ROLLBACK")
                 raise
 
+    def has_doc_id(self, doc_id: str) -> bool:
+        with self.conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM docs WHERE doc_id=%s LIMIT 1", (doc_id,))
+            return cur.fetchone() is not None
+
+    def delete_doc(self, doc_id: str) -> bool:
+        with self.conn.cursor() as cur:
+            cur.execute("DELETE FROM chunks WHERE doc_id=%s", (doc_id,))
+            cur.execute("DELETE FROM docs WHERE doc_id=%s", (doc_id,))
+            return cur.rowcount > 0
+
+    def list_docs(self) -> list[dict]:
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """SELECT d.doc_id, min(d.source),
+                          count(c.chunk_id) FILTER (WHERE c.is_parent),
+                          count(c.chunk_id) FILTER (WHERE NOT c.is_parent)
+                   FROM docs d LEFT JOIN chunks c ON c.doc_id = d.doc_id
+                   GROUP BY d.doc_id ORDER BY min(d.source)"""
+            )
+            return [
+                {"doc_id": r[0], "source": r[1], "parents": r[2], "children": r[3]}
+                for r in cur.fetchall()
+            ]
+
     # ---------- read ----------
     _RBAC = "(NOT confidential OR %(clearance)s) AND (dept = '' OR dept = %(dept)s)"
 

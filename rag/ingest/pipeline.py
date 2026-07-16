@@ -61,9 +61,17 @@ def _ingest_one(store, embedder, p: Path, dept: str, confidential: bool):
         return DocStatus.FAILED, "không tạo được chunk nào"
 
     vectors = embedder.embed([c.text for c in children])
+
+    # file CÙNG TÊN nhưng nội dung MỚI (sha khác) -> thay thế bản cũ, tránh trộn
+    # chunk cũ-mới dưới cùng doc_id. Chỉ xoá SAU khi embed thành công (bản mới
+    # fail thì bản cũ còn nguyên).
+    replaced = store.has_doc_id(doc_id)
+    if replaced:
+        store.delete_doc(doc_id)
+
     store.add_doc(sha, doc_id, p.name, parents, children, vectors)
     kinds = ", ".join(sorted({pg.kind for pg in pages}))
     return DocStatus.INGESTED, (
         f"{len(pages)} trang ({kinds}), {len(parents)} cha / {len(children)} con, "
-        f"{total_chars} ký tự"
+        f"{total_chars} ký tự" + (" — đã thay thế bản cũ cùng tên" if replaced else "")
     )

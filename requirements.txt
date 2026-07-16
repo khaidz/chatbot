@@ -5,8 +5,14 @@ numpy
 requests
 pip-system-certs        # fix CERTIFICATE_VERIFY_FAILED do proxy công ty giải mã TLS
 
+# ===== Web UI (python server.py -> http://localhost:8000) =====
+fastapi
+uvicorn
+python-multipart        # upload file qua form multipart
+
 # ===== Tuỳ chọn — bỏ comment khi cần =====
 PyMuPDF               # đọc PDF + render trang cho Vision OCR (PyPI, không đụng HF)
+python-docx           # đọc .docx (đoạn văn + bảng); .doc cũ phải Save As .docx
 psycopg2-binary       # backend pgvector (RAG_STORE=pgvector)
 # sentence-transformers # embedding local bge-m3 + cross-encoder (CẦN Hugging Face — mạng cty CHẶN)
 underthesea           # tách từ tiếng Việt xịn (fallback: pyvi, rồi regex thường)

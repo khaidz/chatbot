@@ -89,6 +89,58 @@ class NumpyStore:
         np.save(self.dir / "vectors.npy", self._vectors)
         self._bm25 = None  # đánh dấu build lại
 
+    def has_doc_id(self, doc_id: str) -> bool:
+        return any(v["doc_id"] == doc_id for v in self._docs.values())
+
+    def delete_doc(self, doc_id: str) -> bool:
+        """Xoá tài liệu + toàn bộ chunk/vector của nó, ghi lại file kho."""
+        shas = [sha for sha, v in self._docs.items() if v["doc_id"] == doc_id]
+        if not shas:
+            return False
+        keep = [i for i, c in enumerate(self._children) if c.doc_id != doc_id]
+        self._children = [self._children[i] for i in keep]
+        self._vectors = self._vectors[keep] if (self._vectors is not None and keep) else None
+        self._parents = {k: v for k, v in self._parents.items() if v.doc_id != doc_id}
+        for sha in shas:
+            del self._docs[sha]
+        # ghi lại toàn bộ (jsonl là append-only nên phải rewrite khi xoá)
+        self._write_json("docs.json", self._docs)
+        for name, chunks in (
+            ("parents.jsonl", list(self._parents.values())),
+            ("children.jsonl", self._children),
+        ):
+            (self.dir / name).write_text(
+                "".join(json.dumps(c.to_dict(), ensure_ascii=False) + "\n" for c in chunks),
+                encoding="utf-8",
+            )
+        vec_path = self.dir / "vectors.npy"
+        if self._vectors is not None:
+            np.save(vec_path, self._vectors)
+        elif vec_path.exists():
+            vec_path.unlink()
+        self._bm25 = None
+        return True
+
+    def list_docs(self) -> list[dict]:
+        n_children: dict[str, int] = {}
+        for c in self._children:
+            n_children[c.doc_id] = n_children.get(c.doc_id, 0) + 1
+        n_parents: dict[str, int] = {}
+        for p in self._parents.values():
+            n_parents[p.doc_id] = n_parents.get(p.doc_id, 0) + 1
+        return sorted(
+            (
+                {
+                    "doc_id": v["doc_id"],
+                    "source": v["source"],
+                    "parents": n_parents.get(v["doc_id"], 0),
+                    "children": n_children.get(v["doc_id"], 0),
+                }
+                for v in self._docs.values()
+            ),
+            key=lambda d: d["source"].lower(),
+        )
+
     # ---------- read ----------
     def _visibility_mask(self, dept: str, clearance: bool) -> list[bool]:
         return [c.visible_to(dept, clearance) for c in self._children]

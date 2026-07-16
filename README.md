@@ -58,7 +58,9 @@ Ba quyết định khó đảo ngược đã xử lý sẵn trong code:
 ```
 chatbot/
   config.py                 # MỌI lựa chọn model/tham số tập trung ở đây
-  cli.py                    # ingest / ask / eval / stats
+  cli.py                    # ingest / ask / chat / eval / stats
+  server.py                 # Web UI + REST API (FastAPI, http://localhost:8000)
+  web/index.html            # giao diện chat (1 file, không cần build)
   list_models.py            # liệt kê model Gemini mà API key được dùng
   requirements.txt
   run_gemini.bat            # nạp nhanh cấu hình Gemini (chạy mỗi phiên cmd)
@@ -119,6 +121,7 @@ pip install -r requirements.txt
 | `requests` | ✅ (Gemini/Ollama) | gọi API |
 | `pip-system-certs` | mạng công ty | fix proxy giải mã TLS |
 | `PyMuPDF` | khi ingest PDF | đọc PDF + render trang cho Vision |
+| `python-docx` | khi ingest .docx | đoạn văn + bảng (→ Markdown); `.doc` cũ phải Save As `.docx` |
 | `psycopg2-binary` | khi dùng pgvector | PostgreSQL |
 | `underthesea` / `pyvi` | nên có | tách từ tiếng Việt (không có thì fallback regex) |
 | `sentence-transformers` | chỉ khi dùng local bge-m3 | ⚠️ CẦN Hugging Face — mạng công ty chặn |
@@ -275,12 +278,20 @@ Gemini đọc cả trang → Markdown (giữ bảng, dấu tiếng Việt, bỏ 
 ## 10. Lệnh CLI
 
 ```bat
-python cli.py ingest <file...> [--confidential] [--dept legal]   REM .pdf/.txt/.md, nhận glob
+python cli.py ingest <file...> [--confidential] [--dept legal]   REM .pdf/.docx/.txt/.md, nhận glob
 python cli.py ask "<câu hỏi>" [--dept X] [--no-clearance] [--advanced] [--nli]
 python cli.py chat [--session <id>] [--list] [--once "<câu hỏi>"] [--dept X] [--no-clearance]
 python cli.py eval examples\evalset.json [-k 5]
+python cli.py log [--tail 20]      REM query log + thống kê score (cân ngưỡng tự tin)
 python cli.py stats
 ```
+
+**Query log:** mọi lượt hỏi (`ask`/`chat`/web) được ghi lại — kể cả khi "Không tìm thấy"
+(giữ `top_score` của nguồn tốt nhất retrieval tìm được). Backend theo `RAG_STORE`:
+bảng `query_log` (pgvector) hoặc `<RAG_DATA_DIR>\query_log.jsonl` (numpy).
+`python cli.py log` in các lượt gần nhất + phân bố score hai nhóm trả-lời-được /
+không-tìm-thấy — khi hai nhóm tách nhau, nó tự gợi ý vùng đặt ngưỡng tự tin (Todo.md mục 2).
+Ghi log lỗi không bao giờ làm hỏng câu trả lời (chỉ in cảnh báo).
 
 - `--confidential`: tài liệu mật — không gửi ảnh lên cloud khi OCR, chỉ người có clearance thấy.
 - `--dept legal`: tài liệu thuộc phòng ban — chỉ query cùng `--dept` mới thấy (tài liệu không gắn dept = công khai).
@@ -315,6 +326,46 @@ câu hỏi nối tiếp ("thế còn mức phạt?")
 - Hội thoại dài: giữ nguyên văn 8 lượt gần nhất, phần cũ hơn được LLM **tóm tắt dần** vào
   `summary` của phiên (offline thì chỉ cắt cửa sổ, không tóm tắt).
 - Offline/LLM lỗi: condense bị bỏ qua (dùng câu gốc), trả lời extractive — chat vẫn chạy.
+
+### Web UI (`server.py`)
+
+```bat
+pip install fastapi uvicorn
+run_web.bat              REM = run_gemini.bat + python server.py
+```
+
+Mở **http://localhost:8000** — giao diện chat đầy đủ: sidebar danh sách phiên (tạo/xoá/nối lại),
+bong bóng hội thoại, trích dẫn `[n]` tô màu, danh sách nguồn kèm `liên quan %`, badge
+`✓ có nguồn`, dòng *"đã hiểu là: ..."* khi câu hỏi nối tiếp được viết lại. Tự theo
+light/dark của hệ điều hành. Không cần Node/build — một file `web\index.html`.
+
+REST API (gọi được từ ứng dụng khác):
+
+| Method | Endpoint | Chức năng |
+|---|---|---|
+| GET | `/api/sessions` | danh sách phiên |
+| POST | `/api/sessions` | tạo phiên `{dept?, clearance?}` |
+| GET | `/api/sessions/{sid}` | thông tin phiên + toàn bộ messages |
+| POST | `/api/sessions/{sid}/messages` | hỏi `{question}` → answer/sources/grounded/mode/standalone |
+| DELETE | `/api/sessions/{sid}` | xoá phiên (messages xoá theo) |
+| GET | `/api/documents` | danh sách tài liệu + trạng thái |
+| POST | `/api/documents` | upload multipart (`file`, `dept?`, `confidential?`) — ingest chạy nền |
+| DELETE | `/api/documents/{doc_id}` | xoá tài liệu khỏi kho (chunks + vectors) |
+
+### Quản lý tài liệu trên UI (nút "📄 Quản lý tài liệu")
+
+- **Upload** `.pdf/.docx/.txt/.md` (kèm tuỳ chọn `dept`/`mật`) — file gốc lưu ở `uploads\`,
+  ingest chạy **nền**: badge `⏳ đang xử lý` tự cập nhật mỗi 2s → `✓ đã nạp` (kèm số
+  cha/con) hoặc `✗ lỗi` (kèm lý do, ví dụ PDF scan chưa bật Vision).
+- **Trạng thái** persist ở `<RAG_DATA_DIR>\ingest_status.json` — sống qua restart server.
+- **Xoá** 🗑 gỡ tài liệu khỏi kho (chunks + vectors); phiên chat cũ vẫn giữ nguyên lịch sử,
+  nhưng câu hỏi mới sẽ không lấy được từ tài liệu đã xoá.
+- **Upload lại cùng tên**: nội dung y hệt (trùng sha256) → bỏ qua, báo trùng; nội dung MỚI
+  → **thay thế trọn vẹn bản cũ** (xoá bản cũ chỉ sau khi bản mới embed thành công —
+  bản mới lỗi thì bản cũ còn nguyên).
+
+> Server serialize mọi request qua một lock (store/embedder singleton chưa thread-safe) —
+> đủ cho nội bộ/single-user; nhiều user đồng thời mới cần connection pool + worker riêng.
 
 ## 11. Đọc kết quả `ask`
 
@@ -376,6 +427,7 @@ Lộ trình nâng chất lượng (theo thứ tự): (1) mở rộng eval 50-100
 | 12 | lỗi trộn chiều vector / khác model | trộn kho khác embedding | xoá kho (`rmdir /s /q storage` hoặc `DROP TABLE chunks, docs;`) rồi ingest lại |
 | 13 | `UnicodeEncodeError (cp1252)` | console Windows | `cli.py` đã ép UTF-8; script khác: `set PYTHONUTF8=1` |
 | 14 | ingest fail giữa chừng vì 429 (không retry) | free-tier giới hạn RPM | chờ ~1 phút, chạy lại đúng lệnh ingest — file đã xong tự bỏ qua (dedup sha256), pgvector không để rác (transaction); hoặc `set RAG_MAX_RETRIES=2` |
+| 15 | `.doc chưa hỗ trợ` khi ingest | Word 97-2003 nhị phân, python-docx không đọc được | mở Word → Save As → `.docx` rồi nạp lại |
 
 **Bài học mạng công ty:** thông `generativelanguage.googleapis.com` (Google) và PyPI, **chặn hoàn toàn Hugging Face** → mọi thứ chạy qua Gemini; PyMuPDF/psycopg2/underthesea trên PyPI cài bình thường.
 

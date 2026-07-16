@@ -10,6 +10,14 @@ import unicodedata
 _backend = None  # ("underthesea"|"pyvi"|"simple", callable)
 _TOKEN_RE = re.compile(r"[0-9a-zà-ỹ]+", re.IGNORECASE)
 
+# Từ chức năng phổ biến — xuất hiện ở mọi câu nên VÔ GIÁ TRỊ khi so khớp liên quan
+# (dùng cho extractive/lexical scoring; BM25 tự hạ trọng số qua IDF nên không cần).
+STOPWORDS = frozenset(
+    "của là gì và có cho được thì mà các những một này đó kia với về theo trong "
+    "trên dưới tại từ đến khi nào bao nhiêu không ai đâu sao vậy như nếu hay hoặc "
+    "cũng đã sẽ đang bị do bởi ra vào lại nữa rồi ở nó họ tôi bạn anh chị em".split()
+)
+
 
 def normalize(text: str) -> str:
     return unicodedata.normalize("NFC", text or "")

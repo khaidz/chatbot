@@ -84,6 +84,9 @@ class JsonChatStore:
         d["summary"], d["summary_upto"] = summary, upto
         self._write(sid, d)
 
+    def delete_session(self, sid: str):
+        self._path(sid).unlink(missing_ok=True)
+
 
 # ------------------------------------------------------------ PostgreSQL (pgvector)
 class PgChatStore:
@@ -182,3 +185,7 @@ class PgChatStore:
                 "UPDATE chat_sessions SET summary=%s, summary_upto=%s WHERE session_id=%s",
                 (summary, upto, sid),
             )
+
+    def delete_session(self, sid: str):
+        with self.conn.cursor() as cur:  # messages tự xoá theo (ON DELETE CASCADE)
+            cur.execute("DELETE FROM chat_sessions WHERE session_id=%s", (sid,))

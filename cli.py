@@ -120,6 +120,46 @@ def cmd_chat(args):
     print(f"\n[chat] đã lưu. Nối lại: python cli.py chat --session {sid}")
 
 
+def cmd_log(args):
+    from rag.querylog import read_log
+
+    rows = read_log()
+    if not rows:
+        print("Chưa có lượt hỏi nào được ghi log.")
+        return
+
+    print(f"── {min(args.tail, len(rows))} lượt gần nhất (tổng {len(rows)}) ──")
+    for r in rows[-args.tail:]:
+        g = "✓" if r["grounded"] else "✗"
+        sid = f" ({r['session_id']})" if r.get("session_id") else ""
+        print(f"{r['ts'][:16]}  score={r['top_score']:.4f}  nguồn={r['n_sources']}  "
+              f"{g} [{r['mode']}]{sid}  {r['question'][:55]}")
+        if r.get("standalone"):
+            print(f"{'':18}↳ đã hiểu là: {r['standalone'][:65]}")
+
+    # thống kê phục vụ cân chỉnh ngưỡng tự tin (Todo.md mục 2)
+    answered = [r["top_score"] for r in rows if r["n_sources"] > 0]
+    notfound = [r["top_score"] for r in rows if r["n_sources"] == 0]
+    print(f"\n── Thống kê ({len(rows)} lượt) ──")
+    print(f"Trả lời được   : {len(answered):>4} lượt", end="")
+    if answered:
+        print(f"  | top_score min={min(answered):.4f} avg={sum(answered)/len(answered):.4f} max={max(answered):.4f}")
+    else:
+        print()
+    print(f"Không tìm thấy : {len(notfound):>4} lượt", end="")
+    if notfound:
+        print(f"  | top_score min={min(notfound):.4f} avg={sum(notfound)/len(notfound):.4f} max={max(notfound):.4f}")
+    else:
+        print()
+    if answered and notfound:
+        lo, hi = max(notfound), min(answered)
+        if lo < hi:
+            print(f"=> Hai nhóm TÁCH NHAU: ngưỡng tự tin đặt trong khoảng ({lo:.4f} — {hi:.4f})")
+        else:
+            print(f"=> Hai nhóm CHỒNG LẤN (max not-found {lo:.4f} >= min answered {hi:.4f}) "
+                  "— chưa đặt ngưỡng được, cần thêm dữ liệu/cải thiện retrieval")
+
+
 def cmd_eval(args):
     from rag.eval.harness import run_eval
 
@@ -140,7 +180,7 @@ def main():
     ap = argparse.ArgumentParser(prog="cli.py", description="RAG chatbot tiếng Việt")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    p = sub.add_parser("ingest", help="nạp tài liệu (.pdf/.txt/.md)")
+    p = sub.add_parser("ingest", help="nạp tài liệu (.pdf/.docx/.txt/.md)")
     p.add_argument("files", nargs="+")
     p.add_argument("--confidential", action="store_true", help="tài liệu MẬT (không gửi cloud)")
     p.add_argument("--dept", default="", help="phòng ban sở hữu (RBAC)")
@@ -167,6 +207,10 @@ def main():
     p.add_argument("evalset")
     p.add_argument("-k", type=int, default=5)
     p.set_defaults(fn=cmd_eval)
+
+    p = sub.add_parser("log", help="xem query log + thống kê score (cân ngưỡng tự tin)")
+    p.add_argument("--tail", type=int, default=20, help="số lượt gần nhất hiển thị")
+    p.set_defaults(fn=cmd_log)
 
     p = sub.add_parser("stats", help="thông tin kho")
     p.set_defaults(fn=cmd_stats)

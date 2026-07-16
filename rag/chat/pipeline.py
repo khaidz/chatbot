@@ -6,7 +6,7 @@ với retrieval — LLM viết lại thành câu ĐỘC LẬP dựa trên hội 
 này mới đưa vào retrieve(). Lượt đầu / offline / lỗi -> dùng câu gốc.
 """
 import config
-from rag.generate.answer import NOT_FOUND, _extractive, verify_citations
+from rag.generate.answer import NOT_FOUND, _extractive, pick_sources, verify_citations
 from rag.generate.llm import chat
 from rag.retrieve.pipeline import build_context, retrieve
 
@@ -107,8 +107,12 @@ def chat_turn(store, session_id: str, question: str) -> dict:
             mode = "extractive"
             text = _extractive(standalone, parents)
         cited, grounded = verify_citations(text, len(sources))
-        used = [s for s in sources if s["n"] in cited] or sources
+        used = pick_sources(text, cited, sources)
         result = {"answer": text, "sources": used, "grounded": grounded, "mode": mode}
+
+    from rag.querylog import log_query
+
+    log_query(question, standalone, parents, result, session_id=session_id)
 
     store.add_message(session_id, "user", question, [])
     store.add_message(session_id, "assistant", result["answer"], result["sources"])
