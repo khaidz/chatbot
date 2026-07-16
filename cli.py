@@ -56,6 +56,10 @@ def cmd_ask(args):
         for s in suspects:
             print(f"[nli] CẢNH BÁO câu không được nguồn hỗ trợ: {s[:100]}")
 
+    _print_result(result)
+
+
+def _print_result(result: dict):
     print("\n" + result["answer"])
     if result["sources"]:
         print("\nNguồn:")
@@ -65,6 +69,55 @@ def cmd_ask(args):
                 f"liên quan {s['rel']:.0%} (rrf {s['score']:.4f}) ({s['chunk_id']})"
             )
     print(f"\ngrounded={result['grounded']}  mode={result['mode']}")
+
+
+def cmd_chat(args):
+    from rag.chat import get_chat_store
+    from rag.chat.pipeline import chat_turn
+
+    store = get_chat_store()
+
+    if args.list:
+        sessions = store.list_sessions()
+        if not sessions:
+            print("Chưa có phiên chat nào.")
+            return
+        for s in sessions:
+            print(f"  {s['session_id']}  [{s['n_messages']:>3} msg]  "
+                  f"{s['created_at'][:16]}  {s['title'] or '(chưa có tiêu đề)'}")
+        return
+
+    if args.session:
+        sid = args.session
+        if store.get_session(sid) is None:
+            print(f"[!] Không tìm thấy session '{sid}' — xem: python cli.py chat --list")
+            sys.exit(1)
+    else:
+        sid = store.create_session(dept=args.dept, clearance=not args.no_clearance)
+        print(f"[chat] phiên mới: {sid}  (nối lại: python cli.py chat --session {sid})")
+
+    def one_turn(q: str):
+        result = chat_turn(store, sid, q)
+        if result["standalone"] != q:
+            print(f"[condense] → {result['standalone']}")
+        _print_result(result)
+
+    if args.once:
+        one_turn(args.once)
+        return
+
+    print("Gõ câu hỏi (exit/quit/thoát để dừng):")
+    while True:
+        try:
+            q = input("\nBạn: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            break
+        if not q:
+            continue
+        if q.lower() in ("exit", "quit", "thoát", "thoat"):
+            break
+        one_turn(q)
+    print(f"\n[chat] đã lưu. Nối lại: python cli.py chat --session {sid}")
 
 
 def cmd_eval(args):
@@ -100,6 +153,15 @@ def main():
     p.add_argument("--advanced", action="store_true", help="bật tầng 3: classify + multihop")
     p.add_argument("--nli", action="store_true", help="bật NLI check từng câu trả lời")
     p.set_defaults(fn=cmd_ask)
+
+    p = sub.add_parser("chat", help="hội thoại đa phiên, nhớ ngữ cảnh")
+    p.add_argument("--session", default="", help="nối lại phiên cũ theo id")
+    p.add_argument("--list", action="store_true", help="liệt kê các phiên đã có")
+    p.add_argument("--once", default="", metavar="CÂU_HỎI",
+                   help="hỏi đúng 1 câu vào phiên rồi thoát (dùng cho script/test)")
+    p.add_argument("--dept", default="", help="RBAC của phiên (đặt lúc TẠO, cố định cả phiên)")
+    p.add_argument("--no-clearance", action="store_true")
+    p.set_defaults(fn=cmd_chat)
 
     p = sub.add_parser("eval", help="chạy eval set")
     p.add_argument("evalset")

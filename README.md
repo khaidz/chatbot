@@ -87,6 +87,9 @@ chatbot/
     generate/
       llm.py                # chat + vision: ollama|openai|gemini|offline
       answer.py             # prompt có nguồn + verify citation bằng code
+    chat/
+      store.py              # session + messages: PostgreSQL | file JSON (theo RAG_STORE)
+      pipeline.py           # condense question + prompt có lịch sử + tóm tắt dần
     advanced/               # tầng 3: classify_query | multihop | reflect | nli
     eval/harness.py         # đo hit@k, keyword_recall
 ```
@@ -274,6 +277,7 @@ Gemini đọc cả trang → Markdown (giữ bảng, dấu tiếng Việt, bỏ 
 ```bat
 python cli.py ingest <file...> [--confidential] [--dept legal]   REM .pdf/.txt/.md, nhận glob
 python cli.py ask "<câu hỏi>" [--dept X] [--no-clearance] [--advanced] [--nli]
+python cli.py chat [--session <id>] [--list] [--once "<câu hỏi>"] [--dept X] [--no-clearance]
 python cli.py eval examples\evalset.json [-k 5]
 python cli.py stats
 ```
@@ -282,6 +286,35 @@ python cli.py stats
 - `--dept legal`: tài liệu thuộc phòng ban — chỉ query cùng `--dept` mới thấy (tài liệu không gắn dept = công khai).
 - `--advanced`: bật tầng 3 (phân loại câu hỏi + multihop cho câu so sánh/nhiều vế).
 - `--nli`: kiểm từng câu trả lời có được nguồn hỗ trợ không, in cảnh báo câu nghi ngờ.
+
+### Chat đa phiên (`cli.py chat`)
+
+Kho tài liệu **CHUNG** cho mọi phiên; cái riêng từng phiên là **lịch sử hội thoại**:
+
+```bat
+python cli.py chat                       REM tạo phiên mới, vòng lặp gõ-đáp (exit để thoát)
+python cli.py chat --list                REM liệt kê phiên đã có
+python cli.py chat --session abc123      REM nối lại phiên cũ, nhớ nguyên ngữ cảnh
+python cli.py chat --once "câu hỏi"      REM hỏi 1 câu rồi thoát (script/test)
+```
+
+Cách hoạt động một lượt:
+
+```
+câu hỏi nối tiếp ("thế còn mức phạt?")
+  → CONDENSE: LLM viết lại thành câu ĐỘC LẬP dựa trên hội thoại (in [condense] → ...)
+  → retrieve(câu độc lập)              ← pipeline retrieval cũ, nguyên vẹn
+  → prompt = tóm tắt hội thoại cũ + 8 lượt gần nhất + nguồn [n] + câu gốc
+  → trả lời + verify citation như thường
+  → lưu 2 message vào DB
+```
+
+- Lịch sử lưu theo `RAG_STORE`: pgvector → bảng `chat_sessions`/`chat_messages` (PostgreSQL);
+  numpy → file JSON trong `storage\chat\`.
+- RBAC (`--dept`, `--no-clearance`) đặt **lúc TẠO phiên**, cố định cả phiên — câu sau không "quên cờ" được.
+- Hội thoại dài: giữ nguyên văn 8 lượt gần nhất, phần cũ hơn được LLM **tóm tắt dần** vào
+  `summary` của phiên (offline thì chỉ cắt cửa sổ, không tóm tắt).
+- Offline/LLM lỗi: condense bị bỏ qua (dùng câu gốc), trả lời extractive — chat vẫn chạy.
 
 ## 11. Đọc kết quả `ask`
 

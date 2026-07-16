@@ -53,6 +53,10 @@ OPENAI_API_KEY = _env("OPENAI_API_KEY")
 OPENAI_BASE = _env("OPENAI_BASE", "https://api.openai.com/v1")
 OLLAMA_BASE = _env("OLLAMA_BASE", "http://localhost:11434")
 
+# --- Chat đa phiên ---
+CHAT_KEEP_TURNS = 8      # số lượt gần nhất giữ NGUYÊN VĂN trong prompt (cũ hơn -> tóm tắt)
+CHAT_CONDENSE_MSGS = 6   # số message gần nhất dùng để viết lại câu hỏi độc lập
+
 # --- Tham số pipeline ---
 PARENT_CHARS = 1200        # kích thước chunk cha
 CHILD_CHARS = 350          # kích thước chunk con (được embed)
