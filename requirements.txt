@@ -1,0 +1,13 @@
+# ===== BẮT BUỘC (mọi môi trường) =====
+numpy
+
+# ===== Cloud Gemini (cấu hình đang chạy được trên mạng công ty) =====
+requests
+pip-system-certs        # fix CERTIFICATE_VERIFY_FAILED do proxy công ty giải mã TLS
+
+# ===== Tuỳ chọn — bỏ comment khi cần =====
+PyMuPDF               # đọc PDF + render trang cho Vision OCR (PyPI, không đụng HF)
+psycopg2-binary       # backend pgvector (RAG_STORE=pgvector)
+# sentence-transformers # embedding local bge-m3 + cross-encoder (CẦN Hugging Face — mạng cty CHẶN)
+underthesea           # tách từ tiếng Việt xịn (fallback: pyvi, rồi regex thường)
+pyvi

@@ -1,0 +1,19 @@
+"""Factory chọn backend lưu trữ: numpy (file cục bộ) | pgvector (PostgreSQL)."""
+import config
+
+_store = None
+
+
+def get_store():
+    global _store
+    if _store is not None:
+        return _store
+    if config.STORE == "pgvector":
+        from rag.index.pg_store import PgVectorStore
+
+        _store = PgVectorStore(config.PG_DSN)
+    else:
+        from rag.index.store import NumpyStore
+
+        _store = NumpyStore(config.DATA_DIR)
+    return _store
