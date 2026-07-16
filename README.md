@@ -136,6 +136,21 @@ pip install -r requirements.txt
 
 **Quy tắc:** một kho chỉ dùng MỘT embedding (provider + model + dim). Đổi embedding = xoá kho rồi ingest lại (numpy: `rmdir /s /q storage`; pgvector: `DROP TABLE chunks, docs;`). Code tự chặn nếu trộn.
 
+### Local 100% (`run_local.bat`)
+
+Không gửi bất kỳ dữ liệu nào ra ngoài — dùng cho tài liệu MẬT. Chuẩn bị 1 lần:
+
+```bat
+winget install Ollama.Ollama       REM hoặc tải từ ollama.com
+ollama pull qwen2.5:7b             REM LLM trả lời (~4.7GB; máy yếu: qwen2.5:3b)
+ollama pull qwen2.5vl:7b           REM chỉ cần nếu ingest PDF scan (Vision OCR)
+pip install sentence-transformers  REM bge-m3 (~2GB) tự tải từ HF lần đầu chạy
+```
+
+Chạy: `run_local.bat` rồi ingest/ask/chat/server như thường. Kho local nằm RIÊNG ở
+`storage_local\` (numpy) — song song với kho Gemini/pgvector, chuyển qua lại chỉ bằng
+việc nạp bat nào (`run_gemini.bat` ↔ `run_local.bat`), không phải xoá kho nào.
+
 ### Offline (thử nhanh nhất)
 
 ```bat
