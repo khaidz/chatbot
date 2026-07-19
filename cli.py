@@ -25,6 +25,15 @@ def cmd_ingest(args):
 
 
 def cmd_ask(args):
+    # smalltalk (chào / cảm ơn / ok / ...) chặn cho MỌI lệnh ask, không cần --advanced.
+    # Đặt TRƯỚC import stack RAG nặng: câu chào khỏi phải nạp embedder/numpy.
+    from rag.advanced.smalltalk import reply as smalltalk_reply
+
+    st = smalltalk_reply(args.question)
+    if st is not None:
+        print(st)
+        return
+
     from rag.generate.answer import answer
     from rag.retrieve.pipeline import build_context, retrieve
 
@@ -37,9 +46,6 @@ def cmd_ask(args):
 
         qtype = classify_query(args.question)
         print(f"[advanced] loại câu hỏi: {qtype}")
-        if qtype == "smalltalk":
-            print("Xin chào! Hãy hỏi tôi về nội dung các tài liệu đã nạp.")
-            return
         if qtype == "multihop":
             from rag.advanced.multihop import retrieve_multihop
 
@@ -69,7 +75,8 @@ def _print_result(result: dict):
                 f"liên quan {s['rel']:.0%} (rrf {s['score']:.4f}) ({s['chunk_id']})"
             )
     tag = " (cache)" if result.get("cached") else ""
-    print(f"\ngrounded={result['grounded']}  mode={result['mode']}{tag}")
+    sc = f"  top_score={result['top_score']:.4f}" if result.get("top_score") is not None else ""
+    print(f"\ngrounded={result['grounded']}  mode={result['mode']}{sc}{tag}")
 
 
 def cmd_chat(args):
@@ -171,6 +178,17 @@ def cmd_log(args):
         print(f"Latency TB ({len(fresh)} lượt tươi, {cached} lượt cache): "
               f"retrieve={avg('retrieve_ms'):.0f}ms  rerank={avg('rerank_ms'):.0f}ms  "
               f"llm={avg('llm_ms'):.0f}ms  tổng={avg('total_ms'):.0f}ms")
+
+    # token + tiền (lượt cache = 0 token vì không gọi API)
+    import config as _cfg
+    tin = sum(r.get("tok_in", 0) or 0 for r in rows)
+    tout = sum(r.get("tok_out", 0) or 0 for r in rows)
+    if tin or tout:
+        spent = sum(r.get("cost_usd", 0) or 0 for r in rows)
+        priced = [r for r in rows if (r.get("tok_in", 0) or 0) > 0]
+        print(f"Token: vào={tin:,}  ra={tout:,}  ({len(priced)} lượt gọi API) "
+              f"| chi phí ước tính=${spent:.6f} "
+              f"(giá ${_cfg.PRICE_IN}/${_cfg.PRICE_OUT} mỗi 1M token)")
 
 
 def cmd_eval(args):

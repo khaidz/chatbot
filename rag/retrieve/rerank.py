@@ -1,11 +1,11 @@
-"""Rerank — 3 chế độ qua RAG_RERANKER:
+"""Rerank — 2 chế độ qua RAG_RERANKER:
 
-- tên model HF (mặc định BAAI/bge-reranker-v2-m3): cross-encoder, chất lượng cao nhất,
-  CẦN Hugging Face (mạng công ty chặn HF -> không dùng được -> tự fallback lexical).
-- "llm": gửi Gemini danh sách đoạn đánh số -> nhận mảng JSON thứ tự liên quan.
-  Gần cross-encoder, +1 lần gọi LLM/câu, né HF hoàn toàn.
-- "lexical": trùng token thô — tức thì, miễn phí, chất lượng thấp nhất.
-Mọi chế độ lỗi đều fallback lexical (in ra, không hỏng ngầm).
+- "llm" (mặc định): gửi Gemini danh sách đoạn đánh số -> nhận mảng JSON thứ tự liên quan.
+  +1 lần gọi LLM/câu. LLM trả `[]` (không đoạn nào liên quan) -> rerank trả [] = van
+  OUT-OF-DOMAIN: pipeline loại truy vấn, answer() trả "không tìm thấy" mà không gọi LLM
+  sinh câu. Tín hiệu này tách câu lạc đề tốt hơn điểm RRF (RRF theo hạng nên không tách được).
+- "lexical": trùng token thô — tức thì, miễn phí, thuần Python; cũng là DỰ PHÒNG khi
+  gọi LLM lỗi (in ra, không hỏng ngầm).
 """
 import json
 import re
@@ -14,7 +14,6 @@ import config
 from rag.schema import Chunk
 from rag.text.vi import tokenize
 
-_ce_model = None
 _JSON_ARR_RE = re.compile(r"\[[\d,\s]*\]")
 
 
@@ -22,20 +21,19 @@ def rerank(query: str, chunks: list[Chunk], keep: int | None = None) -> list[Chu
     keep = keep or config.RERANK_KEEP
     if len(chunks) <= keep:
         return chunks
-    mode = "lexical" if config.offline_forced() else config.RERANKER
-    if mode == "lexical":
+    if config.RERANKER == "lexical":
         return _lexical(query, chunks, keep)
-    if mode == "llm":
-        try:
-            return _llm(query, chunks, keep)
-        except Exception as e:
-            print(f"[rerank] fallback lexical (llm lỗi: {e})")
-            return _lexical(query, chunks, keep)
+    # mặc định "llm" (mọi giá trị khác 'lexical' đều coi là llm); lỗi -> dự phòng lexical
     try:
-        return _cross_encoder(mode, query, chunks, keep)
+        ranked = _llm(query, chunks, keep)
     except Exception as e:
-        print(f"[rerank] fallback lexical (cross-encoder lỗi: {str(e)[:120]})")
+        print(f"[rerank] fallback lexical (llm lỗi: {e})")
         return _lexical(query, chunks, keep)
+    # ranked rỗng = LLM phán "không đoạn nào liên quan" (van out-of-domain).
+    # KHÁC với lỗi ở trên (lỗi -> fallback lexical, vẫn trả nguồn).
+    if not ranked:
+        print("[rerank] LLM báo KHÔNG đoạn nào liên quan → loại (out-of-domain)")
+    return ranked
 
 
 def _lexical(query: str, chunks: list[Chunk], keep: int) -> list[Chunk]:
@@ -62,20 +60,16 @@ def _llm(query: str, chunks: list[Chunk], keep: int) -> list[Chunk]:
     m = _JSON_ARR_RE.search(reply)
     if not m:
         raise ValueError(f"LLM không trả JSON array: {reply[:120]!r}")
-    order = [i for i in json.loads(m.group(0)) if isinstance(i, int) and 0 <= i < len(chunks)]
+    parsed = json.loads(m.group(0))
+    order = [i for i in parsed if isinstance(i, int) and 0 <= i < len(chunks)]
     order = list(dict.fromkeys(order))  # dedup
     if not order:
-        raise ValueError("JSON array rỗng/sai chỉ số")
+        # `[]` TƯỜNG MINH = LLM phán "không đoạn nào liên quan" → tín hiệu out-of-domain
+        # (đáng tin hơn điểm RRF, vốn không tách được câu lạc đề). Trả [] để pipeline
+        # loại truy vấn → answer() rơi vào nhánh no-context, KHÔNG gọi LLM sinh câu.
+        # Mảng CÓ nội dung nhưng toàn chỉ số rác = output hỏng thật → raise (fallback lexical).
+        if not parsed:
+            return []
+        raise ValueError(f"JSON array sai chỉ số: {m.group(0)[:60]}")
     order += [i for i in range(len(chunks)) if i not in order]  # phần LLM bỏ sót
     return [chunks[i] for i in order[:keep]]
-
-
-def _cross_encoder(model_name: str, query: str, chunks: list[Chunk], keep: int) -> list[Chunk]:
-    global _ce_model
-    if _ce_model is None:
-        from sentence_transformers import CrossEncoder  # cần HF
-
-        _ce_model = CrossEncoder(model_name)
-    scores = _ce_model.predict([(query, c.text) for c in chunks])
-    ranked = sorted(zip(scores, range(len(chunks))), key=lambda x: -x[0])
-    return [chunks[i] for _, i in ranked[:keep]]

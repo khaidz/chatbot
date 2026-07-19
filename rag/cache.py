@@ -11,13 +11,16 @@
 import hashlib
 import json
 import re
+import threading
 from pathlib import Path
 
 import config
 from rag.text.vi import normalize
 
-_pg_conn = None
 _PUNCT_RE = re.compile(r"[^\w\s]", re.UNICODE)  # bỏ dấu câu: "Xin chào." == "xin chào"
+_pg_init_done = False
+_pg_init_lock = threading.Lock()
+_json_lock = threading.Lock()  # nhánh file: read-modify-write phải độc quyền
 
 
 def enabled() -> bool:
@@ -37,14 +40,17 @@ def _corpus_sig() -> str:
 
 
 # ---------- backends ----------
-def _pg():
-    global _pg_conn
-    if _pg_conn is None:
-        import psycopg2
+def _ensure_pg():
+    """Tạo bảng answer_cache một lần (idempotent). Kết nối đi qua pool chung rag/db.py."""
+    global _pg_init_done
+    if _pg_init_done:
+        return
+    with _pg_init_lock:
+        if _pg_init_done:
+            return
+        from rag import db
 
-        _pg_conn = psycopg2.connect(config.PG_DSN)
-        _pg_conn.autocommit = True
-        with _pg_conn.cursor() as cur:
+        with db.cursor() as cur:
             cur.execute(
                 """CREATE TABLE IF NOT EXISTS answer_cache(
                      key text PRIMARY KEY,
@@ -53,7 +59,7 @@ def _pg():
                      result jsonb NOT NULL,
                      created_at timestamptz DEFAULT now())"""
             )
-    return _pg_conn
+        _pg_init_done = True
 
 
 def _json_path() -> Path:
@@ -65,7 +71,10 @@ def get(key: str):
     try:
         sig = _corpus_sig()
         if config.STORE == "pgvector":
-            with _pg().cursor() as cur:
+            from rag import db
+
+            _ensure_pg()
+            with db.cursor() as cur:
                 cur.execute(
                     "SELECT corpus_sig, top_score, result FROM answer_cache WHERE key=%s",
                     (key,),
@@ -77,16 +86,17 @@ def get(key: str):
                     cur.execute("DELETE FROM answer_cache WHERE key=%s", (key,))
                     return None
                 return row[2], float(row[1])
-        p = _json_path()
-        data = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
-        entry = data.get(key)
-        if not entry:
-            return None
-        if entry["sig"] != sig:
-            del data[key]
-            p.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-            return None
-        return entry["result"], float(entry["top_score"])
+        with _json_lock:
+            p = _json_path()
+            data = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+            entry = data.get(key)
+            if not entry:
+                return None
+            if entry["sig"] != sig:
+                del data[key]
+                p.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+                return None
+            return entry["result"], float(entry["top_score"])
     except Exception as e:
         print(f"[cache] lỗi đọc ({str(e)[:100]}) — bỏ qua cache")
         return None
@@ -97,7 +107,10 @@ def put(key: str, top_score: float, result: dict):
         sig = _corpus_sig()
         payload = {k: v for k, v in result.items() if k != "cached"}
         if config.STORE == "pgvector":
-            with _pg().cursor() as cur:
+            from rag import db
+
+            _ensure_pg()
+            with db.cursor() as cur:
                 cur.execute(
                     """INSERT INTO answer_cache(key, corpus_sig, top_score, result)
                        VALUES (%s,%s,%s,%s::jsonb)
@@ -107,10 +120,11 @@ def put(key: str, top_score: float, result: dict):
                     (key, sig, round(top_score, 4), json.dumps(payload, ensure_ascii=False)),
                 )
             return
-        p = _json_path()
-        p.parent.mkdir(parents=True, exist_ok=True)
-        data = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
-        data[key] = {"sig": sig, "top_score": round(top_score, 4), "result": payload}
-        p.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        with _json_lock:
+            p = _json_path()
+            p.parent.mkdir(parents=True, exist_ok=True)
+            data = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+            data[key] = {"sig": sig, "top_score": round(top_score, 4), "result": payload}
+            p.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
     except Exception as e:
         print(f"[cache] lỗi ghi ({str(e)[:100]}) — bỏ qua")

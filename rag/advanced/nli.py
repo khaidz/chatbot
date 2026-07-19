@@ -1,11 +1,10 @@
 """3.4 — NLI check: từng câu trong câu trả lời có được context "hỗ trợ" không.
 
-Có LLM -> hỏi entailment; offline -> ngưỡng trùng token (thô nhưng miễn phí).
+Hỏi LLM entailment; LLM lỗi -> rơi về ngưỡng trùng token (thô nhưng miễn phí).
 Trả về list câu BỊ NGHI NGỜ (không được hỗ trợ).
 """
 import re
 
-import config
 from rag.generate.llm import chat
 from rag.text.vi import tokenize
 
@@ -19,7 +18,7 @@ def check(answer_text: str, context: str) -> list[str]:
         if len(_CITE_RE.sub("", s).strip()) > 15
     ]
     suspects: list[str] = []
-    use_llm = not (config.offline_forced() or config.LLM_PROVIDER == "offline")
+    use_llm = True  # LLM cloud luôn sẵn; lỗi -> except rơi xuống check lexical bên dưới
     ctx_tokens = set(tokenize(context))
     for sent in sentences:
         plain = _CITE_RE.sub("", sent).strip("-• ").strip()

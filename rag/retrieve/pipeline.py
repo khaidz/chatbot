@@ -22,6 +22,9 @@ def retrieve(query: str, dept: str = "", clearance: bool = True) -> list[Chunk]:
         return []
     with span("rerank_ms"):
         top_children = rerank(query, children, config.RERANK_KEEP)
+    # rerank llm trả [] = "không đoạn nào liên quan" (out-of-domain) -> loại truy vấn
+    if not top_children:
+        return []
 
     store = get_store()
     # điểm của cha = điểm RRF cao nhất trong các con được rerank chọn

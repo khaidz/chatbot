@@ -5,9 +5,11 @@
 Cùng MỘT hàm dùng cho cả lúc index lẫn lúc query — lệch nhau là retrieval hỏng ngầm.
 """
 import re
+import threading
 import unicodedata
 
 _backend = None  # ("underthesea"|"pyvi"|"simple", callable)
+_backend_lock = threading.Lock()
 _TOKEN_RE = re.compile(r"[0-9a-zà-ỹ]+", re.IGNORECASE)
 
 # Từ chức năng phổ biến — xuất hiện ở mọi câu nên VÔ GIÁ TRỊ khi so khớp liên quan
@@ -25,24 +27,34 @@ def normalize(text: str) -> str:
 
 def _resolve_backend():
     global _backend
-    if _backend is not None:
+    if _backend is not None:  # đường nhanh
         return _backend
-    try:
-        from underthesea import word_tokenize  # type: ignore
+    # underthesea/pyvi nạp model LAZY ở lần gọi đầu và KHÔNG thread-safe lúc nạp. Server
+    # đa người dùng (không còn lock toàn cục) -> chọn backend + "hâm nóng" model một lần
+    # dưới lock; sau khi nạp xong, predict là read-only nên gọi song song an toàn.
+    with _backend_lock:
+        if _backend is not None:
+            return _backend
+        chosen = None
+        try:
+            from underthesea import word_tokenize  # type: ignore
 
-        _backend = ("underthesea", lambda s: word_tokenize(s))
-        return _backend
-    except Exception:
-        pass
-    try:
-        from pyvi import ViTokenizer  # type: ignore
+            fn = lambda s: word_tokenize(s)  # noqa: E731
+            fn("khởi động")  # ép nạp model NGAY, trong lock
+            chosen = ("underthesea", fn)
+        except Exception:
+            chosen = None
+        if chosen is None:
+            try:
+                from pyvi import ViTokenizer  # type: ignore
 
-        _backend = ("pyvi", lambda s: ViTokenizer.tokenize(s).split())
+                fn = lambda s: ViTokenizer.tokenize(s).split()  # noqa: E731
+                fn("khởi động")
+                chosen = ("pyvi", fn)
+            except Exception:
+                chosen = None
+        _backend = chosen or ("simple", None)
         return _backend
-    except Exception:
-        pass
-    _backend = ("simple", None)
-    return _backend
 
 
 def tokenize(text: str) -> list[str]:

@@ -1,21 +1,31 @@
 """Đo latency từng khâu của MỘT lượt hỏi (retrieve/rerank/llm/total).
 
-Dùng dict module-level: an toàn vì server serialize mọi lượt qua 1 lock,
-CLI thì tuần tự sẵn. log_query() gọi take() để gom số liệu vào query log.
+Dùng bộ nhớ THREAD-LOCAL: mỗi luồng (mỗi request web đồng thời, hoặc CLI) có bảng
+số liệu riêng, không giẫm lên nhau. log_query() gọi take() để gom số liệu của ĐÚNG
+lượt hỏi đang chạy trên luồng này vào query log.
 """
+import threading
 import time
 
-_t: dict[str, int] = {}
+_local = threading.local()
+
+
+def _bucket() -> dict[str, int]:
+    d = getattr(_local, "t", None)
+    if d is None:
+        d = _local.t = {}
+    return d
 
 
 def record(stage: str, ms: float):
-    _t[stage] = int(ms)
+    _bucket()[stage] = int(ms)
 
 
 def take() -> dict[str, int]:
-    d = dict(_t)
-    _t.clear()
-    return d
+    d = _bucket()
+    out = dict(d)
+    d.clear()
+    return out
 
 
 class span:

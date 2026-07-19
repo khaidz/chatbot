@@ -7,14 +7,15 @@
 """
 import numpy as np
 
+from rag import db
 from rag.schema import Chunk
 from rag.text.vi import tokenize
 
 
 class PgVectorStore:
-    def __init__(self, dsn: str):
+    def __init__(self, dsn: str = ""):
         try:
-            import psycopg2
+            import psycopg2  # noqa: F401 — báo lỗi sớm nếu thiếu driver
         except ImportError as e:
             raise RuntimeError(
                 "Thiếu psycopg2 — chạy: pip install psycopg2-binary"
@@ -23,12 +24,11 @@ class PgVectorStore:
 
         self._emb = get_embedder()
         self.dim = self._emb.dim
-        self.conn = psycopg2.connect(dsn)
-        self.conn.autocommit = True
+        # Kết nối đi qua pool chung (rag/db.py) — an toàn đa luồng cho server đa người dùng.
         self._init_schema()
 
     def _init_schema(self):
-        with self.conn.cursor() as cur:
+        with db.cursor() as cur:
             cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
             cur.execute(
                 """CREATE TABLE IF NOT EXISTS docs(
@@ -100,14 +100,14 @@ class PgVectorStore:
 
     # ---------- write ----------
     def has_doc_sha(self, sha: str) -> bool:
-        with self.conn.cursor() as cur:
+        with db.cursor() as cur:
             cur.execute("SELECT 1 FROM docs WHERE sha=%s", (sha,))
             return cur.fetchone() is not None
 
     def add_doc(self, sha, doc_id, source, parents, children, vectors: np.ndarray):
         # transaction tường minh: ghi đủ cả doc + parents + children hoặc không gì cả
         # (autocommit=True cho DDL, nên phải BEGIN/COMMIT tay ở đây)
-        with self.conn.cursor() as cur:
+        with db.cursor() as cur:
             try:
                 cur.execute("BEGIN")
                 cur.execute(
@@ -142,7 +142,7 @@ class PgVectorStore:
                 raise
 
     def has_doc_id(self, doc_id: str) -> bool:
-        with self.conn.cursor() as cur:
+        with db.cursor() as cur:
             cur.execute("SELECT 1 FROM docs WHERE doc_id=%s LIMIT 1", (doc_id,))
             return cur.fetchone() is not None
 
@@ -150,18 +150,18 @@ class PgVectorStore:
         """Chữ ký kho — đổi khi thêm/xoá tài liệu. Dùng vô hiệu answer cache."""
         import hashlib
 
-        with self.conn.cursor() as cur:
+        with db.cursor() as cur:
             cur.execute("SELECT coalesce(string_agg(sha, '|' ORDER BY sha), '') FROM docs")
             return hashlib.md5(cur.fetchone()[0].encode()).hexdigest()
 
     def delete_doc(self, doc_id: str) -> bool:
-        with self.conn.cursor() as cur:
+        with db.cursor() as cur:
             cur.execute("DELETE FROM chunks WHERE doc_id=%s", (doc_id,))
             cur.execute("DELETE FROM docs WHERE doc_id=%s", (doc_id,))
             return cur.rowcount > 0
 
     def list_docs(self) -> list[dict]:
-        with self.conn.cursor() as cur:
+        with db.cursor() as cur:
             cur.execute(
                 """SELECT d.doc_id, min(d.source),
                           count(c.chunk_id) FILTER (WHERE c.is_parent),
@@ -190,7 +190,7 @@ class PgVectorStore:
 
     def search_vector(self, qvec: np.ndarray, k: int, dept: str = "", clearance: bool = True):
         vec = "[" + ",".join(f"{x:.6f}" for x in qvec) + "]"
-        with self.conn.cursor() as cur:
+        with db.cursor() as cur:
             cur.execute(
                 f"""SELECT {self._COLS}, 1 - (embedding <=> %(v)s::vector) AS score
                     FROM chunks
@@ -205,7 +205,7 @@ class PgVectorStore:
         if not query_tokens:
             return []
         tsquery = " | ".join(set(query_tokens))
-        with self.conn.cursor() as cur:
+        with db.cursor() as cur:
             cur.execute(
                 f"""SELECT {self._COLS}, ts_rank(tsv, to_tsquery('simple', %(q)s)) AS score
                     FROM chunks
@@ -217,7 +217,7 @@ class PgVectorStore:
             return self._rows_to_chunks(cur.fetchall())
 
     def get_parent(self, parent_id: str) -> Chunk | None:
-        with self.conn.cursor() as cur:
+        with db.cursor() as cur:
             cur.execute(
                 f"SELECT {self._COLS} FROM chunks WHERE chunk_id=%s", (parent_id,)
             )
@@ -227,7 +227,7 @@ class PgVectorStore:
         return Chunk(r[0], r[1], r[2], r[8], r[4], r[3], r[5], r[6], r[7])
 
     def stats(self) -> dict:
-        with self.conn.cursor() as cur:
+        with db.cursor() as cur:
             cur.execute("SELECT count(*) FROM docs")
             docs = cur.fetchone()[0]
             cur.execute("SELECT count(*) FILTER (WHERE is_parent), count(*) FILTER (WHERE NOT is_parent) FROM chunks")

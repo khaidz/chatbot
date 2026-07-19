@@ -1,11 +1,8 @@
 """3.3 — Self-reflection: LLM tự soát câu trả lời so với nguồn, sửa 1 lần nếu lệch."""
-import config
 from rag.generate.llm import chat
 
 
 def reflect(query: str, answer_text: str, context: str) -> str:
-    if config.offline_forced() or config.LLM_PROVIDER == "offline":
-        return answer_text
     try:
         reply = chat(
             "Soát câu trả lời dưới đây so với NGUỒN. Nếu có ý KHÔNG được nguồn hỗ trợ, "

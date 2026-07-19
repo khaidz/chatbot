@@ -1,8 +1,12 @@
 # RAG Chatbot tiếng Việt — hỏi đáp tài liệu có trích nguồn
 
-Chatbot đọc tài liệu (nghị định, thông tư, hợp đồng... dạng `.pdf/.txt/.md`), trả lời **có trích nguồn `[n]`**, **không bịa** (verify citation bằng code). Hỗ trợ tiếng Việt đầy đủ: chuẩn hoá NFC, tách từ (underthesea), alias số hiệu văn bản ("NĐ 13" ↔ "Nghị định 13/2023/NĐ-CP").
+Chatbot đọc tài liệu (nghị định, thông tư, hợp đồng... dạng `.pdf/.docx/.txt/.md`), trả lời **có trích nguồn `[n]`**, **không bịa** (verify citation bằng code). Hỗ trợ tiếng Việt đầy đủ: chuẩn hoá NFC, tách từ (underthesea), alias số hiệu văn bản ("NĐ 13" ↔ "Nghị định 13/2023/NĐ-CP").
 
 Môi trường tham chiếu: **Windows 11, Python 3.11, cmd**.
+
+> **Chỉ chạy CLOUD.** Toàn hệ thống dùng **Gemini** (embedding + LLM + Vision); LLM/Vision có thể đổi sang **OpenAI**. Đã **bỏ hoàn toàn** chế độ offline (hashing giả) và local/on-prem (Ollama/bge-m3/cross-encoder HF). Thiếu key/lỗi provider ⇒ **báo lỗi rõ** (không fallback giả); riêng rerank & answer có dự phòng **thuần-Python** (lexical / extractive) khi Gemini lỗi tạm.
+>
+> ⚠️ Vì chỉ chạy cloud: text tài liệu + câu hỏi được gửi lên Google (OpenAI). KHÔNG dùng cho tài liệu mật cần ở-lại-nội-bộ. `--confidential` chỉ còn tác dụng RBAC + bỏ qua OCR trang scan (không gửi ảnh lên cloud).
 
 ---
 
@@ -11,10 +15,10 @@ Môi trường tham chiếu: **Windows 11, Python 3.11, cmd**.
 1. [Kiến trúc](#1-kiến-trúc)
 2. [Cấu trúc thư mục](#2-cấu-trúc-thư-mục)
 3. [Cài môi trường từ đầu](#3-cài-môi-trường-từ-đầu)
-4. [Ba môi trường chạy](#4-ba-môi-trường-chạy)
+4. [Một chế độ: Cloud Gemini](#4-một-chế-độ-cloud-gemini-mặc-định)
 5. [⭐ Cấu hình Gemini đang chạy được](#5--cấu-hình-gemini-đang-chạy-được)
 6. [Lưu vào PostgreSQL (pgvector)](#6-lưu-vào-postgresql-pgvector)
-7. [Reranker — 3 chế độ](#7-reranker--3-chế-độ)
+7. [Reranker — 2 chế độ](#7-reranker--2-chế-độ)
 8. [Vision OCR cho PDF scan](#8-vision-ocr-cho-pdf-scan)
 9. [Bảng biến môi trường](#9-bảng-biến-môi-trường)
 10. [Lệnh CLI](#10-lệnh-cli)
@@ -22,6 +26,7 @@ Môi trường tham chiếu: **Windows 11, Python 3.11, cmd**.
 12. [Eval — đo chất lượng](#12-eval--đo-chất-lượng)
 13. [Xử lý sự cố](#13-xử-lý-sự-cố)
 14. [Checklist dựng lại nhanh](#14-checklist-dựng-lại-nhanh)
+15. [Xoá toàn bộ dữ liệu (reset sạch)](#15-xoá-toàn-bộ-dữ-liệu-reset-sạch)
 
 ---
 
@@ -63,13 +68,15 @@ chatbot/
   web/index.html            # giao diện chat (1 file, không cần build)
   list_models.py            # liệt kê model Gemini mà API key được dùng
   requirements.txt
-  run_gemini.bat            # nạp nhanh cấu hình Gemini (chạy mỗi phiên cmd)
-  run_offline.bat           # nạp chế độ offline (smoke-test, 0đ)
-  examples/                 # tài liệu mẫu + evalset.json
+  run_gemini.bat            # nạp cấu hình CLOUD Gemini + pgvector (mỗi phiên cmd)
+  run_web.bat               # = run_gemini.bat + python server.py
+  examples/                 # tài liệu mẫu (.pdf) + evalset_draft.json
   rag/
     schema.py               # Chunk (chunk_id DETERMINISTIC), DocStatus, sha256
-    embed.py                # Embedder: local(bge-m3) | gemini | offline(hashing)
+    embed.py                # Embedder: CHỈ Gemini (gemini-embedding-001)
+    db.py                   # connection pool PostgreSQL dùng chung (đa người dùng)
     net.py                  # HTTP + retry tuỳ chọn (RAG_MAX_RETRIES)
+    cache.py                # answer cache exact-match; querylog.py; timing.py
     text/
       vi.py                 # NFC + tách từ (underthesea > pyvi > regex)
       alias.py              # "NĐ 13" <-> "Nghị định 13/2023/NĐ-CP"
@@ -84,16 +91,17 @@ chatbot/
       bm25.py               # BM25 Okapi tự viết (cho numpy backend)
     retrieve/
       hybrid.py             # BM25 + vector + RRF (gắn điểm rrf vào chunk)
-      rerank.py             # cross-encoder | llm(Gemini) | lexical
+      rerank.py             # llm(Gemini) | lexical (thuần Python, cũng là dự phòng)
       pipeline.py           # retrieve() + build_context() (điểm liên quan)
     generate/
-      llm.py                # chat + vision: ollama|openai|gemini|offline
-      answer.py             # prompt có nguồn + verify citation bằng code
+      llm.py                # chat + vision + stream: gemini | openai
+      answer.py             # prompt có nguồn + verify citation + ngưỡng tự tin
     chat/
       store.py              # session + messages: PostgreSQL | file JSON (theo RAG_STORE)
       pipeline.py           # condense question + prompt có lịch sử + tóm tắt dần
     advanced/               # tầng 3: classify_query | multihop | reflect | nli
-    eval/harness.py         # đo hit@k, keyword_recall
+                            #   + smalltalk.py (chặn chào/cảm ơn/ok trước cửa RAG)
+    eval/harness.py         # đo hit@k, keyword_recall (hỗ trợ câu no-answer)
 ```
 
 ## 3. Cài môi trường từ đầu
@@ -118,49 +126,25 @@ pip install -r requirements.txt
 | Package | Bắt buộc? | Dùng cho |
 |---|---|---|
 | `numpy` | ✅ | mọi môi trường |
-| `requests` | ✅ (Gemini/Ollama) | gọi API |
+| `requests` | ✅ (Gemini/OpenAI) | gọi API |
 | `pip-system-certs` | mạng công ty | fix proxy giải mã TLS |
 | `PyMuPDF` | khi ingest PDF | đọc PDF + render trang cho Vision |
 | `python-docx` | khi ingest .docx | đoạn văn + bảng (→ Markdown); `.doc` cũ phải Save As `.docx` |
 | `psycopg2-binary` | khi dùng pgvector | PostgreSQL |
 | `underthesea` / `pyvi` | nên có | tách từ tiếng Việt (không có thì fallback regex) |
-| `sentence-transformers` | chỉ khi dùng local bge-m3 | ⚠️ CẦN Hugging Face — mạng công ty chặn |
 
-## 4. Ba môi trường chạy
+## 4. Một chế độ: Cloud Gemini (mặc định)
 
-| Môi trường | Embedding | LLM | Chi phí | Dùng khi |
-|---|---|---|---|---|
-| **Offline** | hashing (giả, 256d) | extractive | 0đ | Smoke-test luồng, không cần mạng/key |
-| **Local** | bge-m3 (HF ~2GB) | Ollama | 0đ | Tài liệu MẬT (⚠️ cần Hugging Face) |
-| **Cloud (Gemini)** | gemini-embedding-2 | gemini-flash-lite-latest | tốn quota | Demo, tài liệu KHÔNG mật |
+| Thành phần | Provider | Model mặc định | Đổi được sang |
+|---|---|---|---|
+| Embedding | Gemini | `gemini-embedding-001` (1536d) | *(chỉ Gemini)* |
+| LLM sinh câu | Gemini | `gemini-flash-latest` | OpenAI (`RAG_LLM_PROVIDER=openai`) |
+| Vision OCR | Gemini | `gemini-flash-latest` | OpenAI |
+| Rerank | `llm` (Gemini) | — | `lexical` (thuần Python) |
+
+Đã **bỏ** offline (hashing giả) + local (Ollama/bge-m3/cross-encoder HF). Thiếu `GEMINI_API_KEY` hoặc lỗi API ⇒ **báo lỗi rõ ngay** (không còn "âm thầm fallback offline GIẢ"). Dự phòng khi Gemini lỗi TẠM: rerank rơi về `lexical`, answer rơi về `extractive` — đều thuần-Python, có log rõ.
 
 **Quy tắc:** một kho chỉ dùng MỘT embedding (provider + model + dim). Đổi embedding = xoá kho rồi ingest lại (numpy: `rmdir /s /q storage`; pgvector: `DROP TABLE chunks, docs;`). Code tự chặn nếu trộn.
-
-### Local 100% (`run_local.bat`)
-
-Không gửi bất kỳ dữ liệu nào ra ngoài — dùng cho tài liệu MẬT. Chuẩn bị 1 lần:
-
-```bat
-winget install Ollama.Ollama       REM hoặc tải từ ollama.com
-ollama pull qwen2.5:7b             REM LLM trả lời (~4.7GB; máy yếu: qwen2.5:3b)
-ollama pull qwen2.5vl:7b           REM chỉ cần nếu ingest PDF scan (Vision OCR)
-pip install sentence-transformers  REM bge-m3 (~2GB) tự tải từ HF lần đầu chạy
-```
-
-Chạy: `run_local.bat` rồi ingest/ask/chat/server như thường. Kho local nằm RIÊNG ở
-`storage_local\` (numpy) — song song với kho Gemini/pgvector, chuyển qua lại chỉ bằng
-việc nạp bat nào (`run_gemini.bat` ↔ `run_local.bat`), không phải xoá kho nào.
-
-### Offline (thử nhanh nhất)
-
-```bat
-run_offline.bat
-python cli.py ingest examples\nd13.md examples\hopdong.md
-python cli.py ask "mức phạt vi phạm hợp đồng là bao nhiêu"
-python cli.py eval examples\evalset.json
-```
-
-Dấu hiệu: `stats` báo `dim: 256`, ask trả `mode=extractive`.
 
 ## 5. ⭐ Cấu hình Gemini đang chạy được
 
@@ -185,28 +169,28 @@ Rồi **mở cmd MỚI** (`setx` chỉ có tác dụng ở cmd mở sau đó). K
 .venv\Scripts\activate.bat
 run_gemini.bat
 
-python cli.py ingest examples\nd13.md examples\hopdong.md
+python cli.py ingest examples\nhnn.pdf examples\luatthue.pdf
 python cli.py stats
-python cli.py ask "NĐ 13 định nghĩa dữ liệu cá nhân thế nào"
+python cli.py ask "trình tự thủ tục giám sát ngân hàng gồm mấy bước"
 ```
 
 `run_gemini.bat` nạp (chạy lại mỗi phiên cmd — `set` chỉ sống trong 1 cửa sổ):
 
 ```bat
-set PYTHONUTF8=1
+set RAG_STORE=pgvector
+set RAG_PG_DSN=postgresql://postgres:123456@localhost:5432/rag
 set RAG_EMBED_PROVIDER=gemini
-set RAG_EMBED_MODEL=gemini-embedding-2      REM embedding-001 đã hết quota (429)
+set RAG_EMBED_MODEL=gemini-embedding-001
 set RAG_EMBED_DIM=1536
 set RAG_LLM_PROVIDER=gemini
-set RAG_LLM_MODEL=gemini-flash-lite-latest  REM LUÔN dùng alias *-latest, xem sự cố #6
-set RAG_RERANKER=llm
+set RAG_LLM_MODEL=gemini-3.1-flash-lite     REM nếu 404: đổi alias gemini-flash-lite-latest (sự cố #6)
 set RAG_VISION_PROVIDER=gemini
-set RAG_VISION_MODEL=gemini-flash-lite-latest
-set RAG_STORE=pgvector
-set RAG_MAX_RETRIES=0                       REM prod đổi thành 2
+set RAG_VISION_MODEL=gemini-3.1-flash-lite
+set RAG_RERANKER=llm
+set RAG_MAX_RETRIES=0                        REM prod đổi thành 2
 ```
 
-**Nghiệm thu đạt:** `stats` báo `dim: 1536`, ingest KHÔNG có dòng `[embed] fallback OFFLINE`, ask trả tiếng Việt tự nhiên kèm `[1]`, `grounded=True`, `mode=llm`.
+**Nghiệm thu đạt:** `stats` báo `dim: 1536`, ask trả tiếng Việt tự nhiên kèm `[1]`, `grounded=True`, `mode=llm`. (Thiếu key thì báo lỗi `Thiếu GEMINI_API_KEY` ngay — không còn fallback offline giả.)
 
 ### Chọn model — dùng `list_models.py`
 
@@ -231,7 +215,7 @@ pip install psycopg2-binary
 set RAG_STORE=pgvector
 set RAG_PG_DSN=postgresql://postgres:123456@localhost:5432/rag
 
-python cli.py ingest examples\nd13.md examples\hopdong.md
+python cli.py ingest examples\nhnn.pdf
 python cli.py stats          REM báo backend: pgvector
 ```
 
@@ -242,17 +226,16 @@ Kiểm tra: `docker exec -it rag-pg psql -U postgres -d rag -c "SELECT count(*) 
 - Chiều vector cố định khi tạo bảng. Đổi embedding: `DROP TABLE chunks, docs;` rồi ingest lại.
 - Cần BM25 Okapi thật trong DB → extension `pg_search` (ParadeDB), thay `search_bm25` trong `pg_store.py`.
 
-## 7. Reranker — 3 chế độ
+## 7. Reranker — 2 chế độ
 
 Chọn qua `RAG_RERANKER`:
 
 | Giá trị | Cần gì | Chất lượng | Ghi chú |
 |---|---|---|---|
-| `BAAI/bge-reranker-v2-m3` (mặc định) | Hugging Face | Cao nhất | Mạng công ty chặn HF → không dùng được |
-| `llm` | Gemini | Gần cross-encoder | +1 lần gọi Gemini/câu, né HF hoàn toàn |
-| `lexical` | Không cần gì | Thô (trùng từ) | Tức thì, miễn phí |
+| `llm` | Gemini | Cao | **mặc định**; +1 lần gọi Gemini/câu; LLM trả `[]` = van out-of-domain (loại câu lạc đề) |
+| `lexical` | Không cần gì | Thô (trùng từ) | Tức thì, miễn phí, thuần Python |
 
-Mọi chế độ lỗi đều **tự fallback lexical** (in `[rerank] fallback lexical ...`, không hỏng ngầm) — hệ thống vẫn trả lời, chỉ giảm chất lượng xếp hạng; tệ nhất = chất lượng hybrid search thuần.
+Khi `llm` lỗi/hết quota → **tự fallback `lexical`** (in `[rerank] fallback lexical ...`, không hỏng ngầm) — hệ thống vẫn trả lời, chỉ giảm chất lượng xếp hạng.
 
 ## 8. Vision OCR cho PDF scan
 
@@ -265,30 +248,36 @@ set RAG_VISION_MODEL=gemini-flash-lite-latest
 python cli.py ingest duong\dan\file_scan.pdf
 ```
 
-Gemini đọc cả trang → Markdown (giữ bảng, dấu tiếng Việt, bỏ mộc/chữ ký). Tài liệu `--confidential` **KHÔNG BAO GIỜ** gửi ảnh lên Gemini (tự ép về Ollama local).
+Gemini đọc cả trang → Markdown (giữ bảng, dấu tiếng Việt, bỏ mộc/chữ ký). Tài liệu `--confidential` **KHÔNG BAO GIỜ** gửi ảnh lên Gemini; vì Vision local đã bị gỡ nên **OCR bị BỎ QUA với các trang scan của tài liệu mật** (chỉ trích được phần đã có text).
 
 ## 9. Bảng biến môi trường
 
 | Biến | Giá trị | Mặc định |
 |---|---|---|
-| `RAG_OFFLINE` | `force` (ép offline) \| *(rỗng)* (auto-fallback) \| `off` (cấm fallback) | auto |
 | `RAG_STORE` | `numpy` \| `pgvector` | `numpy` |
 | `RAG_PG_DSN` | chuỗi kết nối PostgreSQL | `postgresql://postgres:123456@localhost:5432/rag` |
+| `RAG_PG_POOL_MAX` | số connection tối đa trong pool pgvector (đa người dùng) | `16` |
 | `RAG_DATA_DIR` | thư mục kho numpy | `storage` |
-| `RAG_EMBED_PROVIDER` | `local` \| `gemini` \| `offline` | `local` |
-| `RAG_EMBED_MODEL` | tên model | theo provider |
-| `RAG_EMBED_DIM` | số chiều | bge-m3=1024, gemini=1536, offline=256 |
+| `RAG_EMBED_PROVIDER` | `gemini` (chỉ hỗ trợ Gemini) | `gemini` |
+| `RAG_EMBED_MODEL` | tên model embedding | `gemini-embedding-001` |
+| `RAG_EMBED_DIM` | số chiều | `1536` |
 | `GEMINI_API_KEY` | key `AIza...`/`AQ...` | rỗng (đừng commit) |
-| `RAG_LLM_PROVIDER` | `ollama` \| `openai` \| `gemini` \| `offline` | `offline` |
-| `RAG_LLM_MODEL` | tên model | `qwen2.5:7b` |
-| `RAG_RERANKER` | tên model HF \| `llm` \| `lexical` | `BAAI/bge-reranker-v2-m3` |
-| `RAG_VISION_PROVIDER` | `ollama` \| `openai` \| `gemini` \| `offline` | `offline` |
-| `RAG_VISION_MODEL` | tên model | `qwen2-vl` |
+| `OPENAI_API_KEY` | key khi dùng LLM/Vision OpenAI | rỗng |
+| `RAG_LLM_PROVIDER` | `gemini` \| `openai` | `gemini` |
+| `RAG_LLM_MODEL` | tên model | `gemini-flash-latest` |
+| `RAG_RERANKER` | `llm` \| `lexical` | `llm` |
+| `RAG_VISION_PROVIDER` | `gemini` \| `openai` | `gemini` |
+| `RAG_VISION_MODEL` | tên model | `gemini-flash-latest` |
 | `RAG_MAX_RETRIES` | `0` = không retry (dev) \| `1-2` (prod, chỉ retry 429/500/503) | `0` |
 | `RAG_CACHE` | `on` \| `off` — answer cache exact-match (tự vô hiệu khi kho đổi) | `on` |
-| `RAG_TIMEOUT` | giây chờ tối đa mỗi cú gọi LLM/embedding — quá hạn báo "quá thời gian chờ" rõ ràng, không treo (streaming: áp cho khoảng lặng giữa 2 chunk, token đang chảy không bị cắt). Local Ollama nạp model lâu → `run_local.bat` đặt 120 | `30` |
+| `RAG_PRICE_IN` | giá USD / 1 **triệu** token VÀO — để Dashboard quy token ra tiền | `0.10` |
+| `RAG_PRICE_OUT` | giá USD / 1 **triệu** token RA | `0.40` |
+| `RAG_TIMEOUT` | giây chờ tối đa mỗi cú gọi LLM/embedding — quá hạn báo "quá thời gian chờ" rõ ràng, không treo (streaming: áp cho khoảng lặng giữa 2 chunk, token đang chảy không bị cắt) | `30` |
 | `RAG_VISION_TIMEOUT` | giây chờ Vision OCR 1 trang (vốn lâu hơn chat) | `120` |
+| `RAG_SCORE_MIN` | ngưỡng tự tin (RRF) — dưới ngưỡng trả "không tìm thấy", không gọi LLM. `0`=tắt | `0.017` (ĐOÁN, chưa chốt bằng eval) |
 | `PYTHONUTF8` | `1` — tránh UnicodeEncodeError console Windows | *(nên set)* |
+
+> Mặc định trên là **giá trị code trong `config.py`** (bare, chưa nạp bat). Các `.bat` ghi đè để chốt chế độ (vd `run_gemini.bat` đặt provider = gemini).
 
 > `set` chỉ sống trong cửa sổ cmd hiện tại. `setx` lưu lâu dài (áp dụng cmd mở MỚI).
 > Retry KHÔNG tốn thêm phí (request lỗi không được bill); lỗi vĩnh viễn (401/404) không bao giờ retry.
@@ -299,7 +288,7 @@ Gemini đọc cả trang → Markdown (giữ bảng, dấu tiếng Việt, bỏ 
 python cli.py ingest <file...> [--confidential] [--dept legal]   REM .pdf/.docx/.txt/.md, nhận glob
 python cli.py ask "<câu hỏi>" [--dept X] [--no-clearance] [--advanced] [--nli]
 python cli.py chat [--session <id>] [--list] [--once "<câu hỏi>"] [--dept X] [--no-clearance]
-python cli.py eval examples\evalset.json [-k 5]
+python cli.py eval examples\evalset_draft.json [-k 5]
 python cli.py log [--tail 20]      REM query log + thống kê score (cân ngưỡng tự tin)
 python cli.py stats
 ```
@@ -310,6 +299,19 @@ python cli.py stats
 hoặc `<RAG_DATA_DIR>\query_log.jsonl` (numpy). `python cli.py log` in các lượt gần nhất
 + phân bố score hai nhóm (tự gợi ý vùng ngưỡng tự tin, Todo.md mục 2) + latency trung bình
 từng khâu (loại lượt cache). Ghi log lỗi không bao giờ làm hỏng câu trả lời.
+
+**Token & chi phí:** mỗi lượt hỏi ghi lại `tok_in`/`tok_out` là **số token THẬT** provider
+trả về (`usageMetadata` của Gemini, `usage` của OpenAI — không phải ước lượng theo ký tự),
+cộng dồn **mọi** lần gọi LLM trong lượt đó: condense + rerank + sinh câu trả lời. Lượt trả
+từ cache = **0 token**. Xem trên **Dashboard** (2 thẻ *Token đã dùng* / *Chi phí ước tính*
++ 2 cột trong bảng lượt gần đây) hoặc `python cli.py log`.
+
+> ⚠ **Số token là thật, số tiền là ƯỚC TÍNH.** Tiền = token × `RAG_PRICE_IN`/`RAG_PRICE_OUT`
+> (USD trên 1 **triệu** token). Mặc định `0.10`/`0.40` chỉ là bậc giá `flash-lite` tại thời
+> điểm viết — **hãy kiểm tra lại** tại https://ai.google.dev/pricing và đặt cho khớp model
+> bạn đang chạy, nếu không cột tiền sẽ sai (token vẫn đúng). Token **embedding không được
+> tính**: API `batchEmbedContents` không trả về số token, muốn biết phải gọi thêm
+> `countTokens` mỗi lượt — không đáng, và embedding rẻ hơn nhiều bậc so với sinh câu.
 
 **Answer cache** (exact-match, mặc định bật): câu hỏi lặp lại trả ngay từ cache — 0 lượt
 Gemini, ~0ms. Key gồm cả dept/clearance (RBAC không rò qua cache); với chat, key là câu
@@ -354,7 +356,7 @@ câu hỏi nối tiếp ("thế còn mức phạt?")
 - RBAC (`--dept`, `--no-clearance`) đặt **lúc TẠO phiên**, cố định cả phiên — câu sau không "quên cờ" được.
 - Hội thoại dài: giữ nguyên văn 8 lượt gần nhất, phần cũ hơn được LLM **tóm tắt dần** vào
   `summary` của phiên (offline thì chỉ cắt cửa sổ, không tóm tắt).
-- Offline/LLM lỗi: condense bị bỏ qua (dùng câu gốc), trả lời extractive — chat vẫn chạy.
+- Gemini lỗi tạm: condense bị bỏ qua (dùng câu gốc), trả lời rơi về extractive — chat vẫn chạy.
 
 ### Web UI (`server.py`)
 
@@ -383,9 +385,10 @@ REST API (gọi được từ ứng dụng khác):
 
 ### Quản lý tài liệu trên UI (nút "📄 Quản lý tài liệu")
 
-- **Upload** `.pdf/.docx/.txt/.md` (kèm tuỳ chọn `dept`/`mật`) — file gốc lưu ở `uploads\`,
-  ingest chạy **nền**: badge `⏳ đang xử lý` tự cập nhật mỗi 2s → `✓ đã nạp` (kèm số
-  cha/con) hoặc `✗ lỗi` (kèm lý do, ví dụ PDF scan chưa bật Vision).
+- **Upload** `.pdf/.docx/.txt/.md` (**chọn nhiều file cùng lúc được**, kèm tuỳ chọn
+  `dept`/`mật` áp cho cả lô) — file gốc lưu ở `uploads\`, ingest chạy **nền** cho từng
+  file độc lập: badge `⏳ đang xử lý` tự cập nhật mỗi 2s → `✓ đã nạp` (kèm số cha/con)
+  hoặc `✗ lỗi` (kèm lý do, ví dụ PDF scan chưa bật Vision). File lỗi không chặn file khác.
 - **Trạng thái** persist ở `<RAG_DATA_DIR>\ingest_status.json` — sống qua restart server.
 - **Xoá** 🗑 gỡ tài liệu khỏi kho (chunks + vectors); phiên chat cũ vẫn giữ nguyên lịch sử,
   nhưng câu hỏi mới sẽ không lấy được từ tài liệu đã xoá.
@@ -393,8 +396,8 @@ REST API (gọi được từ ứng dụng khác):
   → **thay thế trọn vẹn bản cũ** (xoá bản cũ chỉ sau khi bản mới embed thành công —
   bản mới lỗi thì bản cũ còn nguyên).
 
-> Server serialize mọi request qua một lock (store/embedder singleton chưa thread-safe) —
-> đủ cho nội bộ/single-user; nhiều user đồng thời mới cần connection pool + worker riêng.
+> **Đa người dùng:** server KHÔNG còn lock toàn cục — hai người hỏi song song thật. Kho pgvector
+> đi qua connection pool chung (`rag/db.py`), latency thread-local, singleton hâm nóng lúc khởi động.
 
 ## 11. Đọc kết quả `ask`
 
@@ -409,29 +412,35 @@ grounded=True  mode=llm
 
 - **`[n]`**: trích dẫn — được verify bằng code, mọi `[n]` phải trỏ đến nguồn có thật.
 - **`liên quan %`**: điểm RRF (hợp nhất BM25 + vector) so với nguồn mạnh nhất của lần truy vấn. 94% nghĩa là nguồn được trích không phải nguồn retrieval mạnh nhất — tín hiệu debug hữu ích.
-- **`grounded`**: `True` = mọi trích dẫn hợp lệ, hoặc trả lời trung thực "không tìm thấy".
-- **`mode`**: `llm` (Gemini trả lời) | `extractive` (LLM lỗi/offline — nhặt câu từ nguồn) | `no-context` (retrieval không ra gì).
+- **`grounded`**: nghĩa là **"KHÔNG BỊA"**, *không phải* "có nguồn". `True` = mọi `[n]` trỏ
+  tới nguồn có thật, **hoặc** bot trung thực trả lời "không tìm thấy" (0 trích dẫn thì
+  hiển nhiên không có trích dẫn nào sai). Vì vậy câu "Không tìm thấy" luôn `grounded=True`
+  — web UI hiển thị nó bằng nhãn riêng *"✓ không bịa — không có trong tài liệu"* để khỏi
+  nhầm với *"✓ có nguồn"* (chỉ dùng khi thực sự có trích dẫn).
+- **`mode`**: `llm` (Gemini trả lời) | `extractive` (Gemini lỗi tạm — nhặt câu từ nguồn) | `no-context` (retrieval không ra gì).
 
 ## 12. Eval — đo chất lượng
 
-**Điều kiện tiên quyết trước khi tối ưu bất cứ gì.** Format `examples\evalset.json`:
+**Điều kiện tiên quyết trước khi tối ưu bất cứ gì.** Hiện eval mới ở dạng **nháp** `examples\evalset_draft.json` (game + lqmb94 + hợp đồng NamABank + câu no-answer) — **chưa duyệt, chưa chạy lần nào** (xem `Todo.md` mục 1). Format:
 
 ```json
-[{ "q": "câu hỏi", "expect_doc": "nd13", "keywords": ["từ khoá phải có trong context"] }]
+[{ "q": "câu hỏi", "expect_doc": "game", "keywords": ["từ khoá phải có trong context"], "type": "number" }]
 ```
 
+`expect_doc: null` = câu KHÔNG có đáp án trong kho (đo top_score để cân ngưỡng tự tin).
+
 ```bat
-python cli.py eval examples\evalset.json
+python cli.py eval examples\evalset_draft.json
 ```
 
 Đo `hit@k` (đúng tài liệu trong top-k) + `keyword_recall`. Muốn biết rerank đáng giá bao nhiêu:
 
 ```bat
 run_gemini.bat
-python cli.py eval examples\evalset.json     REM rerank llm
+python cli.py eval examples\evalset_draft.json     REM rerank llm
 
 set RAG_RERANKER=lexical
-python cli.py eval examples\evalset.json     REM mô phỏng rerank chết hẳn
+python cli.py eval examples\evalset_draft.json     REM mô phỏng rerank chết hẳn
 ```
 
 > Lưu ý cmd: đừng viết `set X=value && lệnh` — cmd sẽ gán cả dấu cách trước `&&` vào giá trị biến.
@@ -448,17 +457,15 @@ Lộ trình nâng chất lượng (theo thứ tự): (1) mở rộng eval 50-100
 | 4 | 429 `RESOURCE_EXHAUSTED` | hết quota **của model đó** (mỗi model 1 bucket) | `python list_models.py` → đổi model; embedding đổi = xoá kho + ingest lại; hoặc key free-tier project chưa bật billing |
 | 5 | 401, URL vẫn key cũ | key set ở cửa sổ khác / setx cũ đè | `echo %GEMINI_API_KEY%`; set key + chạy CÙNG cửa sổ |
 | 6 | 404 `no longer available to new users` | tên model **bản cứng** bị khoá với user mới (dù vẫn hiện trong ListModels!) | dùng alias `*-latest` |
-| 7 | `WinError 10054 ... huggingface.co` | mạng công ty chặn HF | bỏ local bge-m3, dùng Gemini; hoặc chép cache model + `HF_HUB_OFFLINE=1` |
-| 8 | `[rerank] fallback lexical` liên tục | reranker mặc định cần HF | `set RAG_RERANKER=llm` |
-| 9 | `curl: (35) schannel` | curl siết kiểm tra cert | `curl --ssl-no-revoke` (Python không dính) |
-| 10 | biến `set` "mất" liên tục | `set` chỉ sống 1 cửa sổ | chạy `run_gemini.bat` mỗi phiên; key thì `setx` |
-| 11 | `[FAIL] ... 0 ký tự` khi ingest PDF | thiếu PyMuPDF HOẶC PDF scan | `pip install PyMuPDF`; scan → bật Vision (mục 8) |
-| 12 | lỗi trộn chiều vector / khác model | trộn kho khác embedding | xoá kho (`rmdir /s /q storage` hoặc `DROP TABLE chunks, docs;`) rồi ingest lại |
-| 13 | `UnicodeEncodeError (cp1252)` | console Windows | `cli.py` đã ép UTF-8; script khác: `set PYTHONUTF8=1` |
-| 14 | ingest fail giữa chừng vì 429 (không retry) | free-tier giới hạn RPM | chờ ~1 phút, chạy lại đúng lệnh ingest — file đã xong tự bỏ qua (dedup sha256), pgvector không để rác (transaction); hoặc `set RAG_MAX_RETRIES=2` |
-| 15 | `.doc chưa hỗ trợ` khi ingest | Word 97-2003 nhị phân, python-docx không đọc được | mở Word → Save As → `.docx` rồi nạp lại |
-
-**Bài học mạng công ty:** thông `generativelanguage.googleapis.com` (Google) và PyPI, **chặn hoàn toàn Hugging Face** → mọi thứ chạy qua Gemini; PyMuPDF/psycopg2/underthesea trên PyPI cài bình thường.
+| 7 | `[rerank] fallback lexical` liên tục | Rerank `llm` lỗi/hết quota (Gemini) | kiểm key/quota (`list_models.py`); hoặc chủ động `set RAG_RERANKER=lexical` |
+| 8 | `curl: (35) schannel` | curl siết kiểm tra cert | `curl --ssl-no-revoke` (Python không dính) |
+| 9 | biến `set` "mất" liên tục | `set` chỉ sống 1 cửa sổ | chạy `run_gemini.bat` mỗi phiên; key thì `setx` |
+| 10 | `[FAIL] ... 0 ký tự` khi ingest PDF | thiếu PyMuPDF HOẶC PDF scan | `pip install PyMuPDF`; scan → bật Vision (mục 8) |
+| 11 | lỗi trộn chiều vector / khác model | trộn kho khác embedding | xoá kho (`rmdir /s /q storage` hoặc `DROP TABLE chunks, docs;`) rồi ingest lại |
+| 12 | `UnicodeEncodeError (cp1252)` | console Windows | `cli.py` đã ép UTF-8; script khác: `set PYTHONUTF8=1` |
+| 13 | ingest fail giữa chừng vì 429 (không retry) | free-tier giới hạn RPM | chờ ~1 phút, chạy lại đúng lệnh ingest — file đã xong tự bỏ qua (dedup sha256), pgvector không để rác (transaction); hoặc `set RAG_MAX_RETRIES=2` |
+| 14 | `.doc chưa hỗ trợ` khi ingest | Word 97-2003 nhị phân, python-docx không đọc được | mở Word → Save As → `.docx` rồi nạp lại |
+| 15 | `Thiếu GEMINI_API_KEY` khi ingest/ask | chưa đặt key (hoặc set ở cửa sổ khác) | `setx GEMINI_API_KEY "..."` rồi mở cmd MỚI + `run_gemini.bat` |
 
 ## 14. Checklist dựng lại nhanh
 
@@ -481,10 +488,55 @@ docker run -d --name rag-pg -p 5432:5432 -e POSTGRES_PASSWORD=123456 -e POSTGRES
 
 REM 4) nạp cấu hình + chạy
 run_gemini.bat
-python cli.py ingest examples\nd13.md examples\hopdong.md
+python cli.py ingest examples\nhnn.pdf examples\luatthue.pdf
 python cli.py stats
-python cli.py ask "NĐ 13 định nghĩa dữ liệu cá nhân thế nào"
-python cli.py eval examples\evalset.json
+python cli.py ask "trình tự thủ tục giám sát ngân hàng gồm mấy bước"
+python cli.py eval examples\evalset_draft.json
 ```
 
-**Nghiệm thu đạt:** `stats` = `dim: 1536` + `backend: pgvector`; ask trả tiếng Việt kèm `[1]` + `liên quan %`, `grounded=True`, `mode=llm`, không có dòng fallback OFFLINE.
+**Nghiệm thu đạt:** `stats` = `dim: 1536` + `backend: pgvector`; ask trả tiếng Việt kèm `[1]` + `liên quan %`, `grounded=True`, `mode=llm`.
+
+> **Lưu ý:** hệ thống chỉ chạy cloud (Gemini/OpenAI) — text tài liệu + câu hỏi được gửi ra ngoài. KHÔNG dùng cho tài liệu mật cần ở-lại-nội-bộ.
+
+## 15. Xoá toàn bộ dữ liệu (reset sạch)
+
+Muốn xoá SẠCH mọi thứ đã nạp (chunks + vector + lịch sử chat + query log + answer cache + báo cáo ingest + file gốc) để dựng lại từ đầu. Dữ liệu nằm ở **3 nơi**:
+
+| Nơi | Chứa gì | Có khi nào |
+|---|---|---|
+| DB PostgreSQL `rag` | chunks, docs, kho_meta, query_log, answer_cache, chat_sessions, chat_messages, ingest_reports | `RAG_STORE=pgvector` |
+| Thư mục `storage\` (`RAG_DATA_DIR`) | vectors.npy, parents/children.jsonl, docs.json, meta.json, `chat\`, query_log.jsonl, `ingest_reports\`, **ingest_status.json** | numpy; **ingest_status.json luôn ở đây kể cả pgvector** |
+| Thư mục `uploads\` | file gốc đã upload qua Web UI | luôn (cả 2 backend) |
+
+> Kho vector nằm ở DB (pgvector) HAY ở `storage\` (numpy) tuỳ `RAG_STORE`. Nhưng `ingest_status.json` (trạng thái badge Web UI) **luôn** nằm ở `storage\`, nên dù chạy pgvector vẫn nên xoá `storage\` để reset trạng thái UI.
+
+### A. Đang chạy pgvector (`RAG_STORE=pgvector`)
+
+```bat
+REM 1) Drop mọi bảng trong DB rag (bảng tự tạo lại lần chạy sau)
+docker exec -it rag-pg psql -U postgres -d rag -c "DROP TABLE IF EXISTS chunks, docs, kho_meta, query_log, answer_cache, chat_sessions, chat_messages, ingest_reports CASCADE;"
+
+REM 2) Xoá trạng thái UI + báo cáo ingest trên đĩa + file gốc
+rmdir /s /q storage
+rmdir /s /q uploads
+```
+
+Cách "sạch 100%" thay cho bước 1 (xoá luôn cả container + volume Postgres):
+
+```bat
+docker rm -f rag-pg
+REM tạo lại container theo mục 6 rồi ingest lại
+```
+
+### B. Đang chạy numpy (`RAG_STORE=numpy` — file cục bộ)
+
+```bat
+rmdir /s /q storage      REM toàn bộ kho + chat + log + cache + báo cáo + trạng thái
+rmdir /s /q uploads      REM file gốc
+```
+
+### Nghiệm thu
+
+Chạy lại `python cli.py stats` → báo kho rỗng (`0` chunks). Sau đó `python cli.py ingest ...` để nạp lại từ đầu.
+
+> **Không cần xoá gì để đổi LLM/Vision/rerank** — chỉ khi đổi **embedding** (provider/model/dim) mới bắt buộc reset kho rồi ingest lại (xem mục 4, 6).

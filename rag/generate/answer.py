@@ -60,20 +60,20 @@ def answer(query: str, dept: str = "", clearance: bool = True,
         parents = retrieve(query, dept, clearance)
     top_score = max((p.score for p in parents), default=0.0)
 
-    if not parents:
+    # Ngưỡng tự tin: không có nguồn HOẶC nguồn tốt nhất quá yếu -> từ chối, khỏi gọi LLM.
+    if not parents or top_score < config.SCORE_MIN:
         result = {"answer": NOT_FOUND, "sources": [], "cited": [], "grounded": True,
                   "mode": "no-context"}
     else:
         context, sources = build_context(parents)
         mode = "llm"
         text = ""
-        if not config.offline_forced() and config.LLM_PROVIDER != "offline":
-            try:
-                with span("llm_ms"):
-                    text = chat(_PROMPT.format(not_found=NOT_FOUND, context=context,
-                                               query=query))
-            except Exception as e:
-                print(f"[llm] lỗi ({str(e)[:150]}) — chuyển sang extractive")
+        try:
+            with span("llm_ms"):
+                text = chat(_PROMPT.format(not_found=NOT_FOUND, context=context,
+                                           query=query))
+        except Exception as e:
+            print(f"[llm] lỗi ({str(e)[:150]}) — chuyển sang extractive")
         if not text:
             mode = "extractive"
             text = _extractive(query, parents)

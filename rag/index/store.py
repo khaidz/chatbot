@@ -3,7 +3,9 @@
 Files: meta.json (embed provider/model/dim — quyết định khó đảo ngược #1),
 docs.json (sha256 -> doc, dedup), parents.jsonl, children.jsonl, vectors.npy.
 """
+import functools
 import json
+import threading
 from pathlib import Path
 
 import numpy as np
@@ -13,10 +15,24 @@ from rag.schema import Chunk
 from rag.text.vi import tokenize
 
 
+def _synchronized(fn):
+    """Chạy method dưới self._lock (RLock -> gọi lồng nhau vẫn an toàn)."""
+    @functools.wraps(fn)
+    def wrapper(self, *a, **k):
+        with self._lock:
+            return fn(self, *a, **k)
+    return wrapper
+
+
 class NumpyStore:
     def __init__(self, data_dir: str):
         self.dir = Path(data_dir)
         self.dir.mkdir(parents=True, exist_ok=True)
+        # Bộ nhớ trong (_children/_vectors/_parents/_bm25) chia sẻ giữa các request web.
+        # Server bỏ lock toàn cục -> khoá ở tầng store: đọc (search) an toàn với nhau,
+        # nhưng ghi (add_doc/delete_doc) phải độc quyền. RLock đơn giản, đúng; đọc numpy
+        # rất nhanh nên serialize không đáng kể (phần chậm là LLM, nằm NGOÀI khoá này).
+        self._lock = threading.RLock()
         self._meta = self._read_json("meta.json", {})
         self._docs = self._read_json("docs.json", {})
         self._parents: dict[str, Chunk] = {
@@ -53,9 +69,11 @@ class NumpyStore:
                 f.write(json.dumps(c.to_dict(), ensure_ascii=False) + "\n")
 
     # ---------- write ----------
+    @_synchronized
     def has_doc_sha(self, sha: str) -> bool:
         return sha in self._docs
 
+    @_synchronized
     def add_doc(self, sha, doc_id, source, parents, children, vectors: np.ndarray):
         from rag.embed import get_embedder
 
@@ -89,15 +107,18 @@ class NumpyStore:
         np.save(self.dir / "vectors.npy", self._vectors)
         self._bm25 = None  # đánh dấu build lại
 
+    @_synchronized
     def has_doc_id(self, doc_id: str) -> bool:
         return any(v["doc_id"] == doc_id for v in self._docs.values())
 
+    @_synchronized
     def corpus_signature(self) -> str:
         """Chữ ký kho — đổi khi thêm/xoá tài liệu. Dùng vô hiệu answer cache."""
         import hashlib
 
         return hashlib.md5("|".join(sorted(self._docs.keys())).encode()).hexdigest()
 
+    @_synchronized
     def delete_doc(self, doc_id: str) -> bool:
         """Xoá tài liệu + toàn bộ chunk/vector của nó, ghi lại file kho."""
         shas = [sha for sha, v in self._docs.items() if v["doc_id"] == doc_id]
@@ -127,6 +148,7 @@ class NumpyStore:
         self._bm25 = None
         return True
 
+    @_synchronized
     def list_docs(self) -> list[dict]:
         n_children: dict[str, int] = {}
         for c in self._children:
@@ -151,6 +173,7 @@ class NumpyStore:
     def _visibility_mask(self, dept: str, clearance: bool) -> list[bool]:
         return [c.visible_to(dept, clearance) for c in self._children]
 
+    @_synchronized
     def search_vector(self, qvec: np.ndarray, k: int, dept: str = "", clearance: bool = True):
         """RBAC lọc TRONG query (mask trước khi xếp hạng). Trả về list (Chunk, score)."""
         if self._vectors is None or not len(self._children):
@@ -166,6 +189,7 @@ class NumpyStore:
         top = np.argsort(-scores)[:k]
         return [(self._children[i], float(scores[i])) for i in top if scores[i] > -np.inf]
 
+    @_synchronized
     def search_bm25(self, query_tokens: list[str], k: int, dept: str = "", clearance: bool = True):
         if not self._children:
             return []
@@ -174,9 +198,11 @@ class NumpyStore:
         mask = self._visibility_mask(dept, clearance)
         return [(self._children[i], s) for i, s in self._bm25.top_k(query_tokens, k, mask)]
 
+    @_synchronized
     def get_parent(self, parent_id: str) -> Chunk | None:
         return self._parents.get(parent_id)
 
+    @_synchronized
     def stats(self) -> dict:
         return {
             "backend": "numpy (file cục bộ)",

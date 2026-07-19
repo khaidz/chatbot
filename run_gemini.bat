@@ -6,7 +6,6 @@ REM  khong thua ke rac tu bat chay truoc trong cung cua so cmd (su co #10).
 REM  Key nen de ngoai file:  setx GEMINI_API_KEY "..."  roi mo cmd MOI.
 REM ============================================================================
 
-set RAG_OFFLINE=
 set PYTHONUTF8=1
 
 REM --- Key (dang hardcode theo lua chon cua ban — KHONG commit file nay len git) ---

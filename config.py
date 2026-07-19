@@ -1,6 +1,9 @@
 """MỌI lựa chọn model/tham số tập trung ở đây — đọc từ biến môi trường.
 
-Xem bảng biến môi trường trong cẩm nang (mục 10).
+Chỉ chạy CLOUD: embedding = Gemini; LLM/Vision = Gemini hoặc OpenAI; rerank = llm|lexical.
+KHÔNG còn chế độ offline (hashing giả) hay local (Ollama/bge-m3/cross-encoder HF).
+Thiếu key/lỗi provider => BÁO LỖI RÕ (không fallback giả); riêng rerank/answer có dự
+phòng THUẦN-PYTHON (lexical / extractive) để không rớt hẳn khi Gemini lỗi tạm.
 """
 import os
 
@@ -9,38 +12,31 @@ def _env(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip()
 
 
-# --- Chế độ ---
-OFFLINE = _env("RAG_OFFLINE")  # "force" | "" (auto-fallback) | "off" (cấm fallback)
-
 # --- Storage ---
 STORE = _env("RAG_STORE", "numpy")  # numpy | pgvector
 PG_DSN = _env("RAG_PG_DSN", "postgresql://postgres:123456@localhost:5432/rag")
+# Số connection tối đa trong pool pgvector (rag/db.py). Mỗi request đa người dùng mượn
+# 1 connection cho từng thao tác DB ngắn rồi trả ngay -> 16 dư cho dùng nội bộ.
+PG_POOL_MAX = int(_env("RAG_PG_POOL_MAX", "16"))
 DATA_DIR = _env("RAG_DATA_DIR", "storage")
 
-# --- Embedding ---
-EMBED_PROVIDER = _env("RAG_EMBED_PROVIDER", "local")  # local | gemini | offline
-_DEFAULT_EMBED_MODEL = {
-    "local": "BAAI/bge-m3",
-    "gemini": "gemini-embedding-001",
-    "offline": "hashing-256",
-}
-_DEFAULT_EMBED_DIM = {"local": 1024, "gemini": 1536, "offline": 256}
-EMBED_MODEL = _env("RAG_EMBED_MODEL", _DEFAULT_EMBED_MODEL.get(EMBED_PROVIDER, "BAAI/bge-m3"))
-EMBED_DIM = int(_env("RAG_EMBED_DIM", str(_DEFAULT_EMBED_DIM.get(EMBED_PROVIDER, 1024))))
-OFFLINE_EMBED_DIM = 256  # chiều của hashing embedder (giả)
+# --- Embedding (chỉ Gemini) ---
+EMBED_PROVIDER = _env("RAG_EMBED_PROVIDER", "gemini")  # gemini
+EMBED_MODEL = _env("RAG_EMBED_MODEL", "gemini-embedding-001")
+EMBED_DIM = int(_env("RAG_EMBED_DIM", "1536"))
 
-# --- LLM sinh câu trả lời ---
-LLM_PROVIDER = _env("RAG_LLM_PROVIDER", "offline")  # ollama | openai | gemini | offline
-LLM_MODEL = _env("RAG_LLM_MODEL", "qwen2.5:7b")
+# --- LLM sinh câu trả lời (gemini | openai) ---
+LLM_PROVIDER = _env("RAG_LLM_PROVIDER", "gemini")  # gemini | openai
+LLM_MODEL = _env("RAG_LLM_MODEL", "gemini-flash-latest")
 
-# --- Vision OCR cho PDF scan ---
-VISION_PROVIDER = _env("RAG_VISION_PROVIDER", "offline")  # ollama | openai | gemini | offline
-VISION_MODEL = _env("RAG_VISION_MODEL", "qwen2-vl")
+# --- Vision OCR cho PDF scan (gemini | openai) ---
+VISION_PROVIDER = _env("RAG_VISION_PROVIDER", "gemini")  # gemini | openai
+VISION_MODEL = _env("RAG_VISION_MODEL", "gemini-flash-latest")
 
-# --- Reranker: tên model HF (cross-encoder) | "llm" | "lexical" ---
-RERANKER = _env("RAG_RERANKER", "BAAI/bge-reranker-v2-m3")
+# --- Reranker: "llm" (Gemini) | "lexical" (trùng token, thuần Python) ---
+RERANKER = _env("RAG_RERANKER", "llm")
 
-# --- Retry khi gọi Gemini ---
+# --- Retry khi gọi Gemini/OpenAI ---
 # 0 (mặc định) = KHÔNG retry, fail ngay — hợp dev/demo.
 # Prod: set RAG_MAX_RETRIES=2 — chỉ retry lỗi tạm (429/500/503), không tốn thêm phí
 # (request lỗi không được bill), tránh rớt câu hỏi của user vì throttle thoáng qua.
@@ -51,14 +47,22 @@ GEMINI_API_KEY = _env("GEMINI_API_KEY")
 GEMINI_BASE = _env("GEMINI_BASE", "https://generativelanguage.googleapis.com/v1beta")
 OPENAI_API_KEY = _env("OPENAI_API_KEY")
 OPENAI_BASE = _env("OPENAI_BASE", "https://api.openai.com/v1")
-OLLAMA_BASE = _env("OLLAMA_BASE", "http://localhost:11434")
 
 # --- Answer cache (exact-match, tự vô hiệu khi kho đổi) ---
 CACHE = _env("RAG_CACHE", "on")  # on | off
 
+# --- Giá token để Dashboard quy ra tiền: USD / 1 TRIỆU token ---
+# ⚠ Đây chỉ là MẶC ĐỊNH theo bậc giá gemini-*-flash-lite tại thời điểm viết — giá nhà
+# cung cấp thay đổi theo thời gian và theo model. Số token trên Dashboard là SỐ THẬT do
+# API trả về, còn cột tiền chỉ đúng khi hai biến này khớp bảng giá bạn đang bị tính:
+#   https://ai.google.dev/pricing   (Gemini)   |   https://openai.com/api/pricing (OpenAI)
+# Dùng chung một cặp giá cho mọi lần gọi text (condense + rerank + trả lời); nếu bạn đặt
+# RAG_VISION_MODEL khác bậc giá RAG_LLM_MODEL thì phần Vision sẽ lệch.
+PRICE_IN = float(_env("RAG_PRICE_IN", "0.10"))
+PRICE_OUT = float(_env("RAG_PRICE_OUT", "0.40"))
+
 # --- Timeout gọi LLM/embedding (giây) ---
 # Quá hạn -> lỗi rõ ràng "Quá thời gian chờ", không treo user.
-# Ollama local lần đầu nạp model vào RAM có thể >30s -> run_local.bat set 120.
 TIMEOUT = int(_env("RAG_TIMEOUT", "30"))
 VISION_TIMEOUT = int(_env("RAG_VISION_TIMEOUT", "120"))  # OCR 1 trang ảnh vốn lâu hơn
 
@@ -77,11 +81,10 @@ RRF_K = 60                 # hằng số Reciprocal Rank Fusion
 RERANK_KEEP = 5            # số chunk con giữ lại sau rerank
 CONTEXT_MAX_PARENTS = 5    # số chunk cha tối đa đưa vào context
 
-
-def offline_forced() -> bool:
-    return OFFLINE.lower() == "force"
-
-
-def offline_banned() -> bool:
-    """RAG_OFFLINE=off nghĩa là CẤM fallback lặng lẽ — lỗi thì phải nổ."""
-    return OFFLINE.lower() == "off"
+# --- Ngưỡng tự tin: van chặn rác TRƯỚC cửa LLM ---
+# Điểm RRF của nguồn tốt nhất < ngưỡng -> trả thẳng "Không tìm thấy", KHÔNG gọi LLM
+# (chống bịa từ gốc + tiết kiệm quota cho câu lạc đề). RRF theo hạng nên độc lập
+# provider embedding; thang quan sát hiện ~0.0125–0.0328. 0 = tắt.
+# LƯU Ý: 0.017 là giá trị chọn theo vùng dự kiến, CHƯA chốt bằng eval — cao quá sẽ
+# từ chối oan câu hợp lệ diễn đạt khác chữ. Chỉnh/tắt qua RAG_SCORE_MIN.
+SCORE_MIN = float(_env("RAG_SCORE_MIN", "0.017"))

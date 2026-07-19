@@ -11,6 +11,7 @@ RBAC (dept/clearance) gắn vào SESSION lúc tạo — không truyền tay từ
 tránh lỗ hổng câu sau quên cờ.
 """
 import json
+import threading
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -25,6 +26,9 @@ class JsonChatStore:
     def __init__(self, data_dir: str):
         self.dir = Path(data_dir) / "chat"
         self.dir.mkdir(parents=True, exist_ok=True)
+        # add_message/update_summary là read-modify-write trên file phiên -> khoá cho
+        # server đa người dùng (backend file chủ yếu dùng dev; pgvector mới là prod).
+        self._lock = threading.RLock()
 
     def _path(self, sid: str) -> Path:
         return self.dir / f"{sid}.json"
@@ -46,16 +50,18 @@ class JsonChatStore:
 
     def create_session(self, dept: str = "", clearance: bool = True) -> str:
         sid = _new_id()
-        self._write(sid, {
-            "session_id": sid, "dept": dept, "clearance": clearance,
-            "title": "", "summary": "", "summary_upto": 0,
-            "created_at": datetime.now().isoformat(timespec="seconds"),
-            "messages": [],
-        })
+        with self._lock:
+            self._write(sid, {
+                "session_id": sid, "dept": dept, "clearance": clearance,
+                "title": "", "summary": "", "summary_upto": 0,
+                "created_at": datetime.now().isoformat(timespec="seconds"),
+                "messages": [],
+            })
         return sid
 
     def get_session(self, sid: str) -> dict | None:
-        d = self._read(sid)
+        with self._lock:
+            d = self._read(sid)
         if d is None:
             return None
         return {k: d[k] for k in
@@ -63,45 +69,59 @@ class JsonChatStore:
 
     def list_sessions(self) -> list[dict]:
         out = []
-        for p in sorted(self.dir.glob("*.json")):
-            d = json.loads(p.read_text(encoding="utf-8"))
-            out.append({
-                "session_id": d["session_id"], "title": d.get("title", ""),
-                "created_at": d.get("created_at", ""), "n_messages": len(d.get("messages", [])),
-            })
+        with self._lock:
+            for p in sorted(self.dir.glob("*.json")):
+                d = json.loads(p.read_text(encoding="utf-8"))
+                out.append({
+                    "session_id": d["session_id"], "title": d.get("title", ""),
+                    "created_at": d.get("created_at", ""),
+                    "n_messages": len(d.get("messages", [])),
+                })
         return out
 
-    def add_message(self, sid: str, role: str, content: str, sources: list):
-        d = self._read(sid)
-        d["messages"].append({"role": role, "content": content, "sources": sources})
-        self._write(sid, d)
+    def add_message(self, sid: str, role: str, content: str, sources: list,
+                    top_score: float | None = None):
+        with self._lock:
+            d = self._read(sid)
+            msg = {"role": role, "content": content, "sources": sources}
+            if top_score is not None:
+                msg["top_score"] = top_score
+            d["messages"].append(msg)
+            self._write(sid, d)
 
     def get_messages(self, sid: str) -> list[dict]:
-        d = self._read(sid)
+        with self._lock:
+            d = self._read(sid)
         return d["messages"] if d else []
 
     def set_title(self, sid: str, title: str):
-        d = self._read(sid)
-        d["title"] = title
-        self._write(sid, d)
+        with self._lock:
+            d = self._read(sid)
+            d["title"] = title
+            self._write(sid, d)
 
     def update_summary(self, sid: str, summary: str, upto: int):
-        d = self._read(sid)
-        d["summary"], d["summary_upto"] = summary, upto
-        self._write(sid, d)
+        with self._lock:
+            d = self._read(sid)
+            d["summary"], d["summary_upto"] = summary, upto
+            self._write(sid, d)
 
     def delete_session(self, sid: str):
-        self._path(sid).unlink(missing_ok=True)
+        with self._lock:
+            self._path(sid).unlink(missing_ok=True)
 
 
 # ------------------------------------------------------------ PostgreSQL (pgvector)
 class PgChatStore:
-    def __init__(self, dsn: str):
-        import psycopg2
+    def __init__(self, dsn: str = ""):
+        try:
+            import psycopg2  # noqa: F401 — báo lỗi sớm nếu thiếu driver
+        except ImportError as e:
+            raise RuntimeError("Thiếu psycopg2 — chạy: pip install psycopg2-binary") from e
+        from rag import db
 
-        self.conn = psycopg2.connect(dsn)
-        self.conn.autocommit = True
-        with self.conn.cursor() as cur:
+        self._db = db  # pool chung, an toàn đa luồng
+        with db.cursor() as cur:
             cur.execute(
                 """CREATE TABLE IF NOT EXISTS chat_sessions(
                      session_id text PRIMARY KEY,
@@ -120,7 +140,12 @@ class PgChatStore:
                      role text NOT NULL,
                      content text NOT NULL,
                      sources jsonb DEFAULT '[]',
+                     top_score real,
                      created_at timestamptz DEFAULT now())"""
+            )
+            # migrate DB cũ (bảng đã tồn tại trước khi có cột này)
+            cur.execute(
+                "ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS top_score real"
             )
             cur.execute(
                 """CREATE INDEX IF NOT EXISTS chat_messages_sid_idx
@@ -129,7 +154,7 @@ class PgChatStore:
 
     def create_session(self, dept: str = "", clearance: bool = True) -> str:
         sid = _new_id()
-        with self.conn.cursor() as cur:
+        with self._db.cursor() as cur:
             cur.execute(
                 "INSERT INTO chat_sessions(session_id, dept, clearance) VALUES (%s,%s,%s)",
                 (sid, dept, clearance),
@@ -137,7 +162,7 @@ class PgChatStore:
         return sid
 
     def get_session(self, sid: str) -> dict | None:
-        with self.conn.cursor() as cur:
+        with self._db.cursor() as cur:
             cur.execute(
                 """SELECT session_id, dept, clearance, title, summary, summary_upto
                    FROM chat_sessions WHERE session_id=%s""", (sid,),
@@ -149,7 +174,7 @@ class PgChatStore:
                 "title": r[3], "summary": r[4], "summary_upto": r[5]}
 
     def list_sessions(self) -> list[dict]:
-        with self.conn.cursor() as cur:
+        with self._db.cursor() as cur:
             cur.execute(
                 """SELECT s.session_id, s.title, s.created_at::text,
                           count(m.id)
@@ -163,35 +188,37 @@ class PgChatStore:
                 for r in cur.fetchall()
             ]
 
-    def add_message(self, sid: str, role: str, content: str, sources: list):
-        with self.conn.cursor() as cur:
+    def add_message(self, sid: str, role: str, content: str, sources: list,
+                    top_score: float | None = None):
+        with self._db.cursor() as cur:
             cur.execute(
-                """INSERT INTO chat_messages(session_id, role, content, sources)
-                   VALUES (%s,%s,%s,%s::jsonb)""",
-                (sid, role, content, json.dumps(sources, ensure_ascii=False)),
+                """INSERT INTO chat_messages(session_id, role, content, sources, top_score)
+                   VALUES (%s,%s,%s,%s::jsonb,%s)""",
+                (sid, role, content, json.dumps(sources, ensure_ascii=False), top_score),
             )
 
     def get_messages(self, sid: str) -> list[dict]:
-        with self.conn.cursor() as cur:
+        with self._db.cursor() as cur:
             cur.execute(
-                """SELECT role, content, sources FROM chat_messages
+                """SELECT role, content, sources, top_score FROM chat_messages
                    WHERE session_id=%s ORDER BY id""", (sid,),
             )
-            return [{"role": r[0], "content": r[1], "sources": r[2]} for r in cur.fetchall()]
+            return [{"role": r[0], "content": r[1], "sources": r[2], "top_score": r[3]}
+                    for r in cur.fetchall()]
 
     def set_title(self, sid: str, title: str):
-        with self.conn.cursor() as cur:
+        with self._db.cursor() as cur:
             cur.execute(
                 "UPDATE chat_sessions SET title=%s WHERE session_id=%s", (title, sid)
             )
 
     def update_summary(self, sid: str, summary: str, upto: int):
-        with self.conn.cursor() as cur:
+        with self._db.cursor() as cur:
             cur.execute(
                 "UPDATE chat_sessions SET summary=%s, summary_upto=%s WHERE session_id=%s",
                 (summary, upto, sid),
             )
 
     def delete_session(self, sid: str):
-        with self.conn.cursor() as cur:  # messages tự xoá theo (ON DELETE CASCADE)
+        with self._db.cursor() as cur:  # messages tự xoá theo (ON DELETE CASCADE)
             cur.execute("DELETE FROM chat_sessions WHERE session_id=%s", (sid,))

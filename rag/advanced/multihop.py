@@ -11,8 +11,6 @@ _JSON_ARR_RE = re.compile(r"\[.*\]", re.DOTALL)
 
 
 def decompose(query: str) -> list[str]:
-    if config.offline_forced() or config.LLM_PROVIDER == "offline":
-        return _split_simple(query)
     try:
         reply = chat(
             "Tách câu hỏi sau thành TỐI ĐA 3 câu hỏi con độc lập, mỗi câu tự đủ nghĩa. "

@@ -7,7 +7,8 @@
   Word không có "trang" thật (trang chỉ xác định khi render) => gom thành trang LOGIC:
   ngắt ở Heading 1/2 hoặc ~3000 ký tự, để citation "(nguồn: x.docx, trang n)" vẫn có nghĩa.
 - .doc (Word 97-2003, nhị phân): KHÔNG hỗ trợ — mở Word "Save As .docx" rồi nạp.
-- Tài liệu confidential KHÔNG BAO GIỜ gửi ảnh lên Gemini (ép về Ollama local).
+- Tài liệu confidential: KHÔNG gửi ảnh trang lên cloud để OCR -> trang scan bị BỎ QUA
+  (đã bỏ Vision local; muốn OCR tài liệu mật thì phải có kênh OCR nội bộ riêng).
 """
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,7 +28,9 @@ _OCR_PROMPT = (
 class Page:
     number: int   # 1-based
     text: str
-    kind: str     # text | scan | hybrid
+    kind: str     # text | scan | hybrid | error
+    status: str = "ok"   # ok | ocr_failed | ocr_skipped | blank | error
+    note: str = ""       # lý do khi status != ok (để ghi báo cáo per-trang)
 
 
 def extract_pages(path: str, confidential: bool = False) -> list[Page]:
@@ -35,7 +38,9 @@ def extract_pages(path: str, confidential: bool = False) -> list[Page]:
     suffix = p.suffix.lower()
     if suffix in (".txt", ".md", ".markdown"):
         text = normalize(p.read_text(encoding="utf-8", errors="replace"))
-        return [Page(1, text, "text")]
+        if text.strip():
+            return [Page(1, text, "text")]
+        return [Page(1, "", "text", "blank", "file rỗng")]
     if suffix == ".pdf":
         return _extract_pdf(p, confidential)
     if suffix == ".docx":
@@ -58,16 +63,28 @@ def _extract_pdf(p: Path, confidential: bool) -> list[Page]:
 
     pages: list[Page] = []
     with fitz.open(p) as doc:
+        total = doc.page_count
         for i, page in enumerate(doc, start=1):
-            text = normalize(page.get_text().strip())
+            # Một trang hỏng KHÔNG được giết cả tài liệu — bắt lỗi, ghi nhận, đi tiếp.
+            try:
+                text = normalize(page.get_text().strip())
+            except Exception as e:  # trang PDF lỗi/corrupt
+                pages.append(Page(i, "", "error", "error", str(e)[:200]))
+                print(f"[extract] trang {i}/{total}: LỖI đọc — {str(e)[:150]}")
+                continue
             density = len(text)
             if density >= config.PAGE_TEXT_MIN_CHARS:
                 pages.append(Page(i, text, "text"))
                 continue
             kind = "scan" if density == 0 else "hybrid"
-            ocr = _ocr_page(page, confidential)
-            merged = (text + "\n\n" + ocr).strip() if kind == "hybrid" else ocr
-            pages.append(Page(i, normalize(merged), kind))
+            ocr, st, note = _ocr_page(page, confidential)
+            merged = normalize((text + "\n\n" + ocr).strip() if kind == "hybrid" else ocr)
+            if merged:  # có nội dung dùng được (OCR ok, hoặc hybrid còn phần text gốc)
+                pages.append(Page(i, merged, kind, "ok", note if st != "ok" else ""))
+                print(f"[ocr] trang {i}/{total} ({kind}): OK ({len(merged)} ký tự)")
+            else:  # không trích được gì -> ghi đúng lý do (skipped/failed/blank)
+                pages.append(Page(i, "", kind, st, note))
+                print(f"[ocr] trang {i}/{total} ({kind}): {st.upper()} — {note}")
     return pages
 
 
@@ -135,20 +152,25 @@ def _table_to_markdown(table) -> str:
     return "\n".join(lines)
 
 
-def _ocr_page(page, confidential: bool) -> str:
-    """Render trang -> PNG -> Vision OCR. Trả về "" nếu vision offline/lỗi."""
+def _ocr_page(page, confidential: bool) -> tuple[str, str, str]:
+    """Render trang -> PNG -> Vision OCR. Trả về (text, status, note):
+    - ("...", "ok", "")            OCR đọc được nội dung
+    - ("", "ocr_skipped", note)    Vision offline -> trang scan bị bỏ qua (không phải lỗi)
+    - ("", "ocr_failed", note)     render/gọi VLM ném lỗi
+    - ("", "blank", note)          VLM trả rỗng (trang trắng / ảnh không đọc được)
+    """
     from rag.generate.llm import vision_ocr
 
     provider = config.VISION_PROVIDER
-    if confidential and provider == "gemini":
-        # tài liệu MẬT: cấm gửi ảnh ra cloud — ép về Ollama local
-        print("[vision] tài liệu confidential: ép Vision về ollama (không gửi Gemini)")
-        provider = "ollama"
-    if provider == "offline" or config.offline_forced():
-        return ""
-    png = page.get_pixmap(dpi=150).tobytes("png")
+    if confidential:
+        # tài liệu MẬT: cấm gửi ảnh trang lên cloud để OCR (đã bỏ Vision local) -> bỏ qua
+        return "", "ocr_skipped", "tài liệu mật: không gửi ảnh lên cloud để OCR (trang scan bị bỏ)"
     try:
-        return vision_ocr(png, _OCR_PROMPT, provider=provider)
+        png = page.get_pixmap(dpi=150).tobytes("png")
+        text = vision_ocr(png, _OCR_PROMPT, provider=provider)
     except Exception as e:
-        print(f"[vision] OCR lỗi trang {page.number + 1}: {e}")
-        return ""
+        return "", "ocr_failed", str(e)[:200]
+    text = (text or "").strip()
+    if not text:
+        return "", "blank", "OCR không trích được nội dung (trang trắng hoặc ảnh mờ)"
+    return text, "ok", ""
